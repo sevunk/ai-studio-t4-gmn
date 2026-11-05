@@ -1,0 +1,23 @@
+# Unified Multi-Engine AI Studio (T4 Edition)
+# Menyatukan pembacaan lintas folder model di ComfyUI sehingga:
+# - models/diffusion_models <-> models/unet saling membaca
+# - models/text_encoders <-> models/clip saling membaca
+
+ai_studio_t4_shared:
+    base_path: /content/ComfyUI/
+    diffusion_models: |
+        models/diffusion_models
+        models/unet
+    unet: |
+        models/diffusion_models
+        models/unet
+    text_encoders: |
+        models/text_encoders
+        models/clip
+    clip: |
+        models/text_encoders
+        models/clip
+    vae: models/vae
+    loras: models/loras
+    clip_vision: models/clip_vision
+    upscale_models: models/upscale_models

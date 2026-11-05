@@ -1,0 +1,25 @@
+# Unified Multi-Engine AI Studio (T4 Edition) — Requirements
+# Catatan: PyTorch, torchvision, torchaudio, triton, dan xformers TIDAK dicantumkan
+# di sini agar tidak menimpa build CUDA bawaan Google Colab T4.
+
+gradio>=4.44.0
+websocket-client>=1.6.0
+requests>=2.31.0
+huggingface_hub>=0.24.0
+hf_xet
+gguf>=0.13.0
+comfy-kitchen
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.9
+Pillow>=10.0.0
+numpy>=1.24.0
+einops>=0.7.0
+torchsde
+kornia
+spandrel
+safetensors>=0.4.2
+sentencepiece
+protobuf>=4.25.0
+accelerate
+pyyaml>=6.0.0
+psutil>=5.9.0
