@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Unified Session Gallery & Metadata Inspector (`core/gallery.py`)
-Mengelola penyimpanan, pembacaan riwayat, ekstraksi metadata, penghapusan item,
-dan pembuatan arsip `.zip` untuk Gambar (`.png`) maupun Video (`.mp4` + thumbnail `.jpg`).
+Unified Session Gallery & Fast Thumbnail Metadata Inspector (`core/gallery.py`)
+Mengelola penyimpanan, pembuatan thumbnail ringan (`*.thumb.jpg` ~20 KB agar Galeri
+termuat instan tanpa mendownload PNG 5-15 MB per item), pembacaan riwayat,
+ekstraksi metadata, penghapusan item, dan pembuatan arsip `.zip` untuk Gambar (`.png`)
+maupun Video (`.mp4` + thumbnail `.jpg`).
 """
 
+import io
 import json
 import time
 import uuid
@@ -12,15 +15,39 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from PIL import Image
+
 from config.catalog import BASE_DIR, GALLERY_DIR
+
+THUMB_MAX_SIZE = (420, 420)
+THUMB_JPEG_QUALITY = 84
 
 
 class GalleryManager:
-    """Manajer riwayat terpadu Gambar (.png) & Video (.mp4 + thumbnail .jpg) + Metadata (.json)."""
+    """Manajer riwayat terpadu Gambar (.png + fast .thumb.jpg) & Video (.mp4 + .jpg) + Metadata (.json)."""
 
     def __init__(self, gallery_dir: Path = GALLERY_DIR) -> None:
         self.gallery_dir = gallery_dir
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _ensure_image_thumbnail(img_path: Path) -> Path:
+        """
+        Membuat atau mengambil file thumbnail JPEG ringan (`{stem}.thumb.jpg`, ~20 KB)
+        dari file gambar penuh (`{stem}.png`) agar `gr.Gallery` memuat 20x lebih cepat.
+        Jika pembuatan thumbnail gagal, otomatis fallback ke `img_path` asli.
+        """
+        thumb_path = img_path.with_name(f"{img_path.stem}.thumb.jpg")
+        if thumb_path.is_file() and thumb_path.stat().st_size > 500:
+            return thumb_path
+        try:
+            with Image.open(img_path) as im:
+                rgb = im.convert("RGB")
+                rgb.thumbnail(THUMB_MAX_SIZE, Image.Resampling.LANCZOS)
+                rgb.save(thumb_path, format="JPEG", quality=THUMB_JPEG_QUALITY, optimize=True)
+            return thumb_path
+        except Exception:
+            return img_path
 
     def save_image_item(
         self,
@@ -30,7 +57,7 @@ class GalleryManager:
         metadata: Dict[str, Any],
         ext: str = ".png",
     ) -> Tuple[Path, Path]:
-        """Menyimpan file gambar (.png) beserta metadata pendamping (.json) dengan stem identik."""
+        """Menyimpan file gambar penuh (.png), thumbnail cepat (.thumb.jpg), dan metadata (.json)."""
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
         stem = f"{engine_id}_{ts}_{seed}_{uuid.uuid4().hex[:5]}"
@@ -38,13 +65,15 @@ class GalleryManager:
         json_path = self.gallery_dir / f"{stem}.json"
 
         img_path.write_bytes(image_bytes)
+        thumb_path = self._ensure_image_thumbnail(img_path)
+
         record = dict(metadata)
         record.update(
             {
                 "media_type": "image",
                 "file_name": img_path.name,
                 "media_path": str(img_path),
-                "preview_path": str(img_path),
+                "preview_path": str(thumb_path),
                 "engine_id": engine_id,
                 "seed": seed,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -96,8 +125,8 @@ class GalleryManager:
     def list_items(self) -> Tuple[List[Tuple[str, str]], List[str], str]:
         """
         Mengembalikan:
-        - `gallery_tuples`: list `(preview_image_path, caption)` untuk ditampilkan di `gr.Gallery`
-        - `media_paths`: list path file utama (`.png` atau `.mp4`) sesuai urutan indeks
+        - `gallery_tuples`: list `(fast_thumbnail_path, caption)` untuk ditampilkan instan di `gr.Gallery`
+        - `media_paths`: list path file utama resolusi penuh (`.png` atau `.mp4`) sesuai urutan indeks
         - `summary_markdown`: ringkasan jumlah gambar & video di galeri
         """
         self.gallery_dir.mkdir(parents=True, exist_ok=True)
@@ -138,19 +167,20 @@ class GalleryManager:
                 img_file = None
                 for ext in (".png", ".jpg", ".jpeg", ".webp"):
                     cand = jf.with_suffix(ext)
-                    if cand.is_file():
+                    if cand.is_file() and not cand.name.endswith(".thumb.jpg"):
                         img_file = cand
                         break
                 if img_file is None:
                     continue
+                thumb_file = self._ensure_image_thumbnail(img_file)
                 caption = f"🖼️ {eng} · {meta.get('width', '')}×{meta.get('height', '')} · seed {seed}"
-                gallery_tuples.append((str(img_file), caption))
+                gallery_tuples.append((str(thumb_file), caption))
                 media_paths.append(str(img_file))
                 img_count += 1
 
         summary = (
             f"🗂️ **Galeri Sesi (`{self.gallery_dir}`)**: "
-            f"**{img_count} Gambar** & **{vid_count} Video MP4** tersimpan."
+            f"**{img_count} Gambar** & **{vid_count} Video MP4** tersimpan *(Fast Thumbnail Cache Aktif)*."
         )
         return gallery_tuples, media_paths, summary
 
@@ -207,7 +237,7 @@ class GalleryManager:
         return "\n".join(rows)
 
     def delete_item(self, media_path_str: str) -> bool:
-        """Menghapus file gambar/video beserta thumbnail `.jpg` dan metadata `.json`-nya."""
+        """Menghapus file gambar/video beserta thumbnail `.jpg`/`.thumb.jpg` dan metadata `.json`-nya."""
         if not media_path_str:
             return False
         base = Path(media_path_str)
@@ -220,15 +250,27 @@ class GalleryManager:
                     deleted = True
                 except Exception:
                     pass
+        thumb_cand = base.with_name(f"{base.stem}.thumb.jpg")
+        if thumb_cand.is_file():
+            try:
+                thumb_cand.unlink(missing_ok=True)
+                deleted = True
+            except Exception:
+                pass
         return deleted
 
     def export_all_to_zip(self) -> Optional[Path]:
-        """Membungkus seluruh isi `/content/Studio_Gallery` ke dalam satu file `.zip`."""
+        """Membungkus seluruh isi asli `/content/Studio_Gallery` (tanpa file cache `.thumb.jpg`) ke dalam satu file `.zip`."""
         valid_exts = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".json"}
         files = [
             p
             for p in self.gallery_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in valid_exts and not p.name.startswith("_raw_")
+            if (
+                p.is_file()
+                and p.suffix.lower() in valid_exts
+                and not p.name.startswith("_raw_")
+                and not p.name.endswith(".thumb.jpg")
+            )
         ]
         if not files:
             return None

@@ -2,20 +2,12 @@
 """
 Gradio 4/5/6 Compatible UI dengan Layout Bergaya Fooocus (`lllyasviel/Fooocus`)
 (`ui/fooocus_app.py`)
-Fitur Utama:
-1. Top Telemetry Bar (`gr.HTML`): Status Backend, GPU & Active VRAM Bar (GB / 15.0 GB),
-   CPU System RAM Bar (GB / 12.7 GB), Badge Engine Aktif, serta Status WanGP Memory Profile.
-2. Center Main Viewport: `gr.Gallery` (mode Image/Upscale) atau `gr.Video` (otomatis muncul
-   saat `Wan 2.1 I2V` dipilih) + Status & 3-Stage Stepper Bar di bawah kanvas.
-3. Bottom Prompt Bar: Textbox 3 baris (placeholder dinamis), kolom tombol aksi
-   (`🚀 Generate`, `🛑 Stop / Interrupt`, `🧹 Flush RAM/VRAM`), serta baris checkbox Fooocus:
-   - `[ ] 🖼️ Input Image (Upscale / Image Edit / Wan 2.1 I2V)`
-   - `[ ] ⚡ Auto-Upscale Hasil Render (Tiled 2x)`
-   - `[x] ⚙️ Advanced (Buka Panel Pengaturan & Model)`
-4. Bottom Drawer `Input Image`: 3 Sub-Tab (`Standalone Upscaler`, `Wan 2.1 Start Frame`,
-   `Qwen 2.1 Multi-Image Edit`).
-5. Right Sidebar Drawer `Advanced`: 4 Tab (`Setting`, `Models & LoRA`, `Sampler & Developer`,
-   `History & Inspector`).
+Berangkat dari Checkpoint Resmi `ai-studio-t4_GEMINI.zip` dengan penambahan:
+1. Mendukung 7 Engine Utama (termasuk `6. Tongyi-MAI Z-Image-Turbo 6B` & `5. Chroma1-HD + Flash 8-Step LoRA`).
+2. Tab Utama Tersendiri `🗂️ Galeri & History Inspector (Fast Thumbnail Grid)` yang terpisah dari
+   `🎨 Studio Workspace`, menggunakan cache thumbnail ringan (`*.thumb.jpg` ~20 KB) dan antrean
+   Non-Blocking (`queue=False` + `.then()`) sehingga Galeri termuat instan dan tidak pernah
+   terganggu atau muter-muter saat proses Generate sedang berjalan.
 """
 
 import inspect
@@ -211,7 +203,7 @@ def render_telemetry_bar_html(
             <div class="fooocus-brand">
                 <h1 class="fooocus-brand-title">⚡ UNIFIED MULTI-ENGINE AI STUDIO (T4 EDITION)</h1>
                 <p class="fooocus-brand-sub">
-                    Fooocus Interface • Headless ComfyUI Backend • WanGP Memory Guard • Disk Kosong: {free_disk_gb:.1f} GiB
+                    Fooocus Interface • Headless ComfyUI Backend • WanGP C++ Memory Guard • Disk Kosong: {free_disk_gb:.1f} GiB
                 </p>
             </div>
             <div class="telemetry-pills-wrap">
@@ -347,7 +339,7 @@ def build_fooocus_studio_app(
     downloader: Optional[UniversalDownloader] = None,
     gallery: Optional[GalleryManager] = None,
 ) -> gr.Blocks:
-    """Membangun seluruh aplikasi Gradio bergaya Fooocus untuk ke-6 Engine + Spandrel Tiled Upscaler."""
+    """Membangun seluruh aplikasi Gradio bergaya Fooocus untuk ke-7 Engine + Spandrel Tiled Upscaler."""
     backend_mgr = backend or HeadlessComfyManager(comfy_dir=COMFY_DIR)
     dl_mgr = downloader or UniversalDownloader(models_root=MODELS_DIR)
     gal_mgr = gallery or GalleryManager(gallery_dir=GALLERY_DIR)
@@ -420,600 +412,610 @@ def build_fooocus_studio_app(
         )
 
         # ======================================================================
-        # 2. CENTER MAIN VIEWPORT + RIGHT ADVANCED DRAWER
+        # 2. MAIN TOP-LEVEL TABS:
+        #    - TAB A: 🎨 Studio Workspace (Generate & Upscale)
+        #    - TAB B: 🗂️ Galeri & History Inspector (Dedicated Fast Thumbnail Tab)
         # ======================================================================
-        with gr.Row(equal_height=False):
-            # ---- CENTER MAIN CANVAS & BOTTOM PROMPT / INPUT DRAWER ----
-            with gr.Column(scale=7):
-                main_image_gallery = _safe_component(
-                    gr.Gallery,
-                    label="🎨 Studio Viewport (Image & Tiled Upscaler)",
-                    columns=2,
-                    height=510,
-                    object_fit="contain",
-                    preview=True,
-                    visible=(not init_eng.is_video),
-                    elem_classes=["fooocus-canvas-box"],
-                )
-                main_video_player = _safe_component(
-                    gr.Video,
-                    label="🎬 Wan 2.1 I2V Cinema Viewport (MP4)",
-                    height=510,
-                    autoplay=True,
-                    visible=init_eng.is_video,
-                    elem_classes=["fooocus-canvas-box"],
-                )
-
-                stepper_bar_html = gr.HTML(value=render_stepper_html())
-
-                # ==============================================================
-                # 3. BOTTOM PROMPT BAR (FOOOCUS STYLE)
-                # ==============================================================
-                with gr.Row(elem_classes=["fooocus-prompt-row"]):
-                    prompt_box = _safe_component(
-                        gr.Textbox,
-                        label="Prompt (Teks Deskriptif, Tag Anime, <image1> Edit Qwen 2.1, atau Gerakan Kamera Wan 2.1)",
-                        placeholder=init_def["placeholder"],
-                        lines=3,
-                        scale=5,
-                    )
-                    with gr.Column(scale=2, min_width=190):
-                        generate_btn = _safe_component(
-                            gr.Button,
-                            value="🚀 Generate",
-                            variant="primary",
-                            elem_classes=["fooocus-generate-btn"],
+        with gr.Tabs():
+            # ==================================================================
+            # TAB UTAMA A — 🎨 STUDIO WORKSPACE
+            # ==================================================================
+            with gr.Tab("🎨 Studio Workspace"):
+                with gr.Row(equal_height=False):
+                    # ---- CENTER MAIN CANVAS & BOTTOM PROMPT / INPUT DRAWER ----
+                    with gr.Column(scale=7):
+                        main_image_gallery = _safe_component(
+                            gr.Gallery,
+                            label="🎨 Studio Viewport (Image & Tiled Upscaler)",
+                            columns=2,
+                            height=510,
+                            object_fit="contain",
+                            preview=True,
+                            visible=(not init_eng.is_video),
+                            elem_classes=["fooocus-canvas-box"],
                         )
-                        with gr.Row():
-                            stop_btn = _safe_component(
-                                gr.Button,
-                                value="🛑 Stop / Interrupt",
-                                variant="stop",
-                                size="sm",
-                            )
-                            flush_btn = _safe_component(
-                                gr.Button,
-                                value="🧹 Flush RAM/VRAM",
-                                variant="secondary",
-                                size="sm",
-                            )
+                        main_video_player = _safe_component(
+                            gr.Video,
+                            label="🎬 Wan 2.1 I2V Cinema Viewport (MP4)",
+                            height=510,
+                            autoplay=True,
+                            visible=init_eng.is_video,
+                            elem_classes=["fooocus-canvas-box"],
+                        )
 
-                # Baris Checkbox Bawah (Persis Fooocus)
-                with gr.Row():
-                    chk_input_image = _safe_component(
-                        gr.Checkbox,
-                        label="🖼️ Input Image (Upscale / Image Edit / Wan 2.1 I2V)",
-                        value=False,
-                    )
-                    chk_auto_upscale = _safe_component(
-                        gr.Checkbox,
-                        label="⚡ Auto-Upscale Hasil Render (Tiled 2x)",
-                        value=False,
-                    )
-                    chk_advanced = _safe_component(
-                        gr.Checkbox,
-                        label="⚙️ Advanced (Buka Panel Pengaturan & Model)",
-                        value=True,
-                    )
+                        stepper_bar_html = gr.HTML(value=render_stepper_html())
 
-                # ==============================================================
-                # 4. BOTTOM DRAWER: INPUT IMAGE (3 SUB-TABS)
-                # ==============================================================
-                with _safe_component(
-                    gr.Column,
-                    visible=False,
-                    elem_classes=["fooocus-drawer-box"],
-                ) as input_image_drawer:
-                    gr.Markdown("### 🖼️ Input Image & Multimodal Workspace")
-                    with gr.Tabs():
-                        # Sub-Tab 1: Standalone Upscaler
-                        with gr.Tab("🔍 Standalone Upscaler (Cepat & Hemat VRAM)"):
-                            with gr.Row():
-                                with gr.Column(scale=4):
-                                    upscale_input_img = _safe_component(
-                                        gr.Image,
-                                        label="Upload Gambar untuk Di-Upscale",
-                                        type="filepath",
-                                        height=240,
-                                    )
-                                    send_last_to_upscaler_btn = _safe_component(
+                        # ======================================================
+                        # 3. BOTTOM PROMPT BAR (FOOOCUS STYLE)
+                        # ======================================================
+                        with gr.Row(elem_classes=["fooocus-prompt-row"]):
+                            prompt_box = _safe_component(
+                                gr.Textbox,
+                                label="Prompt (Teks Deskriptif, Tag Anime, <image1> Edit Qwen 2.1, atau Gerakan Kamera Wan 2.1)",
+                                placeholder=init_def["placeholder"],
+                                lines=3,
+                                scale=5,
+                            )
+                            with gr.Column(scale=2, min_width=190):
+                                generate_btn = _safe_component(
+                                    gr.Button,
+                                    value="🚀 Generate",
+                                    variant="primary",
+                                    elem_classes=["fooocus-generate-btn"],
+                                )
+                                with gr.Row():
+                                    stop_btn = _safe_component(
                                         gr.Button,
-                                        value="📥 Kirim Hasil Terakhir ke Upscaler",
+                                        value="🛑 Stop / Interrupt",
+                                        variant="stop",
+                                        size="sm",
+                                    )
+                                    flush_btn = _safe_component(
+                                        gr.Button,
+                                        value="🧹 Flush RAM/VRAM",
                                         variant="secondary",
                                         size="sm",
                                     )
-                                with gr.Column(scale=4):
-                                    upscaler_model_dropdown = _safe_component(
-                                        gr.Dropdown,
-                                        label="Pilih Model Spandrel Tiled Upscaler (<350 MB VRAM)",
-                                        choices=list(UPSCALER_CATALOG.keys()),
-                                        value="4x-UltraSharp.safetensors",
-                                    )
-                                    upscale_scale_radio = _safe_component(
-                                        gr.Radio,
-                                        label="Faktor Skala Akhir (Tiled 4x + Lanczos)",
-                                        choices=["1.5x", "2.0x", "4.0x"],
-                                        value="2.0x",
-                                    )
-                                    run_standalone_upscale_btn = _safe_component(
-                                        gr.Button,
-                                        value="✨ Upscale Sekarang (2–4 Detik)",
-                                        variant="primary",
-                                    )
 
-                        # Sub-Tab 2: Wan 2.1 Start Frame (Image-to-Video)
-                        with gr.Tab("🎬 Wan 2.1 Start Frame (Image-to-Video)"):
-                            with gr.Row():
-                                with gr.Column(scale=4):
-                                    wan_start_img = _safe_component(
-                                        gr.Image,
-                                        label="Upload Gambar Frame Awal (Start Frame Wan 2.1)",
-                                        type="pil",
-                                        height=240,
-                                    )
-                                with gr.Column(scale=5):
-                                    wan_auto_crop_chk = _safe_component(
-                                        gr.Checkbox,
-                                        label="🔒 Auto-Aspect Center-Crop 480P (Anti-Gepeng Lanczos)",
-                                        value=True,
-                                    )
-                                    wan_ratio_info_html = gr.HTML(
-                                        "<div style='font-size:0.82rem; color:#94a3b8;'>"
-                                        "Unggah gambar frame awal untuk menghitung ukuran 480P optimal bebas distorsi."
-                                        "</div>"
-                                    )
-                                    gr.Markdown("**🎥 Quick Motion Tags (Klik untuk menambahkan ke Prompt):**")
-                                    with gr.Row():
-                                        btn_motion_push = _safe_component(gr.Button, value="+ Slow Push-In", size="sm")
-                                        btn_motion_orbit = _safe_component(gr.Button, value="+ Orbit Shot", size="sm")
-                                        btn_motion_pan = _safe_component(gr.Button, value="+ Smooth Pan", size="sm")
-                                    with gr.Row():
-                                        btn_motion_wind = _safe_component(gr.Button, value="+ Wind & Hair", size="sm")
-                                        btn_motion_hand = _safe_component(gr.Button, value="+ Handheld Realism", size="sm")
-
-                        # Sub-Tab 3: Qwen 2.1 Multi-Image Edit
-                        with gr.Tab("🎨 Qwen 2.1 Multi-Image Edit (<image1>, <image2>, <image3>)"):
-                            gr.Markdown(
-                                "Unggah 1–3 gambar referensi lalu sebutkan **`<image1>`**, **`<image2>`**, "
-                                "atau **`<image3>`** di dalam prompt utama Anda."
-                            )
-                            with gr.Row():
-                                qwen_ref1 = _safe_component(
-                                    gr.Image,
-                                    label="Referensi <image1>",
-                                    type="filepath",
-                                    height=175,
-                                )
-                                qwen_ref2 = _safe_component(
-                                    gr.Image,
-                                    label="Referensi <image2>",
-                                    type="filepath",
-                                    height=175,
-                                )
-                                qwen_ref3 = _safe_component(
-                                    gr.Image,
-                                    label="Referensi <image3>",
-                                    type="filepath",
-                                    height=175,
-                                )
-                            with gr.Row():
-                                qwen_lock_ratio_chk = _safe_component(
-                                    gr.Checkbox,
-                                    label="Ikuti Rasio <image1> Otomatis",
-                                    value=True,
-                                )
-                                qwen_ref_res_slider = _safe_component(
-                                    gr.Slider,
-                                    label="Resolusi Fitur Referensi (Default: 992 — Bebas Bug Noise #16435)",
-                                    minimum=0,
-                                    maximum=1536,
-                                    step=32,
-                                    value=992,
-                                )
-
-            # ==================================================================
-            # 5. RIGHT SIDEBAR DRAWER: ADVANCED (4 TABS)
-            # ==================================================================
-            with _safe_component(
-                gr.Column,
-                scale=5,
-                visible=True,
-                elem_classes=["fooocus-drawer-box"],
-            ) as advanced_drawer:
-                with gr.Tabs():
-                    # ----------------------------------------------------------
-                    # TAB 1 — SETTING
-                    # ----------------------------------------------------------
-                    with gr.Tab("⚙️ Setting"):
-                        engine_selector = _safe_component(
-                            gr.Dropdown,
-                            label="🧠 Pilih Engine Utama (6 Arsitektur T4)",
-                            choices=engine_radio_choices,
-                            value=initial_engine_id,
-                        )
-                        preset_mode_radio = _safe_component(
-                            gr.Radio,
-                            label="⚡ Preset Mode (Otomatis Sinkron Steps, CFG, Sampler & Arsitektur)",
-                            choices=PRESET_MODES,
-                            value=init_preset_val,
-                        )
-                        aspect_dropdown = _safe_component(
-                            gr.Dropdown,
-                            label="📐 Aspect Ratio / Resolusi",
-                            choices=init_aspects,
-                            value=init_aspect_val,
-                        )
+                        # Baris Checkbox Bawah (Persis Fooocus)
                         with gr.Row():
-                            width_slider = _safe_component(
-                                gr.Slider,
-                                label="Width (px)",
-                                minimum=320,
-                                maximum=1536,
-                                step=16,
-                                value=init_w,
+                            chk_input_image = _safe_component(
+                                gr.Checkbox,
+                                label="🖼️ Input Image (Upscale / Image Edit / Wan 2.1 I2V)",
+                                value=False,
                             )
-                            height_slider = _safe_component(
-                                gr.Slider,
-                                label="Height (px)",
-                                minimum=320,
-                                maximum=1536,
-                                step=16,
-                                value=init_h,
+                            chk_auto_upscale = _safe_component(
+                                gr.Checkbox,
+                                label="⚡ Auto-Upscale Hasil Render (Tiled 2x)",
+                                value=False,
+                            )
+                            chk_advanced = _safe_component(
+                                gr.Checkbox,
+                                label="⚙️ Advanced (Buka Panel Pengaturan & Model)",
+                                value=True,
                             )
 
-                        # Kontrol Khusus Video (Hanya tampil saat Wan 2.1 aktif)
+                        # ======================================================
+                        # 4. BOTTOM DRAWER: INPUT IMAGE (3 SUB-TABS)
+                        # ======================================================
                         with _safe_component(
-                            gr.Group,
-                            visible=init_eng.is_video,
-                        ) as video_specific_group:
-                            wan_frames_slider = _safe_component(
-                                gr.Slider,
-                                label="🎬 Base Frames ((4k)+1): 17..81 (Default 49 = 3.1 Detik)",
-                                minimum=17,
-                                maximum=81,
-                                step=4,
-                                value=49,
-                            )
-                            wan_fps_dropdown = _safe_component(
-                                gr.Dropdown,
-                                label="🎞️ Output FPS (True-Duration Motion Interpolation)",
-                                choices=WAN21_FPS_CHOICES,
-                                value=WAN21_FPS_CHOICES[0],
-                            )
+                            gr.Column,
+                            visible=False,
+                            elem_classes=["fooocus-drawer-box"],
+                        ) as input_image_drawer:
+                            gr.Markdown("### 🖼️ Input Image & Multimodal Workspace")
+                            with gr.Tabs():
+                                # Sub-Tab 1: Standalone Upscaler
+                                with gr.Tab("🔍 Standalone Upscaler (Cepat & Hemat VRAM)"):
+                                    with gr.Row():
+                                        with gr.Column(scale=4):
+                                            upscale_input_img = _safe_component(
+                                                gr.Image,
+                                                label="Upload Gambar untuk Di-Upscale",
+                                                type="filepath",
+                                                height=240,
+                                            )
+                                            send_last_to_upscaler_btn = _safe_component(
+                                                gr.Button,
+                                                value="📥 Kirim Hasil Terakhir ke Upscaler",
+                                                variant="secondary",
+                                                size="sm",
+                                            )
+                                        with gr.Column(scale=4):
+                                            upscaler_model_dropdown = _safe_component(
+                                                gr.Dropdown,
+                                                label="Pilih Model Spandrel Tiled Upscaler (<350 MB VRAM)",
+                                                choices=list(UPSCALER_CATALOG.keys()),
+                                                value="4x-UltraSharp.safetensors",
+                                            )
+                                            upscale_scale_radio = _safe_component(
+                                                gr.Radio,
+                                                label="Faktor Skala Akhir (Tiled 4x + Lanczos)",
+                                                choices=["1.5x", "2.0x", "4.0x"],
+                                                value="2.0x",
+                                            )
+                                            run_standalone_upscale_btn = _safe_component(
+                                                gr.Button,
+                                                value="✨ Upscale Sekarang (2–4 Detik)",
+                                                variant="primary",
+                                            )
 
-                        # Kontrol Khusus Image (Sembunyi saat Wan 2.1 aktif)
-                        with _safe_component(
-                            gr.Group,
-                            visible=(not init_eng.is_video),
-                        ) as image_specific_group:
-                            batch_count_slider = _safe_component(
-                                gr.Slider,
-                                label="🖼️ Batch Count (Jumlah Gambar: 1..4)",
-                                minimum=1,
-                                maximum=4,
-                                step=1,
-                                value=1,
-                            )
+                                # Sub-Tab 2: Wan 2.1 Start Frame (Image-to-Video)
+                                with gr.Tab("🎬 Wan 2.1 Start Frame (Image-to-Video)"):
+                                    with gr.Row():
+                                        with gr.Column(scale=4):
+                                            wan_start_img = _safe_component(
+                                                gr.Image,
+                                                label="Upload Gambar Frame Awal (Start Frame Wan 2.1)",
+                                                type="pil",
+                                                height=240,
+                                            )
+                                        with gr.Column(scale=5):
+                                            wan_auto_crop_chk = _safe_component(
+                                                gr.Checkbox,
+                                                label="🔒 Auto-Aspect Center-Crop 480P (Anti-Gepeng Lanczos)",
+                                                value=True,
+                                            )
+                                            wan_ratio_info_html = gr.HTML(
+                                                "<div style='font-size:0.82rem; color:#94a3b8;'>"
+                                                "Unggah gambar frame awal untuk menghitung ukuran 480P optimal bebas distorsi."
+                                                "</div>"
+                                            )
+                                            gr.Markdown("**🎥 Quick Motion Tags (Klik untuk menambahkan ke Prompt):**")
+                                            with gr.Row():
+                                                btn_motion_push = _safe_component(gr.Button, value="+ Slow Push-In", size="sm")
+                                                btn_motion_orbit = _safe_component(gr.Button, value="+ Orbit Shot", size="sm")
+                                                btn_motion_pan = _safe_component(gr.Button, value="+ Smooth Pan", size="sm")
+                                            with gr.Row():
+                                                btn_motion_wind = _safe_component(gr.Button, value="+ Wind & Hair", size="sm")
+                                                btn_motion_hand = _safe_component(gr.Button, value="+ Handheld Realism", size="sm")
 
-                        negative_prompt_box = _safe_component(
-                            gr.Textbox,
-                            label="🚫 Negative Prompt (Otomatis Disesuaikan per Engine · Aktif saat CFG > 1.0)",
-                            lines=2,
-                            value=str(
-                                init_def.get(
-                                    "negative_prompt",
-                                    "worst quality, low quality, blurry, deformed, bad anatomy, watermark, jpeg artifacts",
-                                )
-                            ),
-                        )
-                        seed_number = _safe_component(
-                            gr.Number,
-                            label="🎲 Seed (-1 = Acak Setiap Render)",
-                            value=-1,
-                            precision=0,
-                        )
+                                # Sub-Tab 3: Qwen 2.1 Multi-Image Edit
+                                with gr.Tab("🎨 Qwen 2.1 Multi-Image Edit (<image1>, <image2>, <image3>)"):
+                                    gr.Markdown(
+                                        "Unggah 1–3 gambar referensi lalu sebutkan **`<image1>`**, **`<image2>`**, "
+                                        "atau **`<image3>`** di dalam prompt utama Anda."
+                                    )
+                                    with gr.Row():
+                                        qwen_ref1 = _safe_component(
+                                            gr.Image,
+                                            label="Referensi <image1>",
+                                            type="filepath",
+                                            height=175,
+                                        )
+                                        qwen_ref2 = _safe_component(
+                                            gr.Image,
+                                            label="Referensi <image2>",
+                                            type="filepath",
+                                            height=175,
+                                        )
+                                        qwen_ref3 = _safe_component(
+                                            gr.Image,
+                                            label="Referensi <image3>",
+                                            type="filepath",
+                                            height=175,
+                                        )
+                                    with gr.Row():
+                                        qwen_lock_ratio_chk = _safe_component(
+                                            gr.Checkbox,
+                                            label="Ikuti Rasio <image1> Otomatis",
+                                            value=True,
+                                        )
+                                        qwen_ref_res_slider = _safe_component(
+                                            gr.Slider,
+                                            label="Resolusi Fitur Referensi (Default: 992 — Bebas Bug Noise #16435)",
+                                            minimum=0,
+                                            maximum=1536,
+                                            step=32,
+                                            value=992,
+                                        )
 
-                    # ----------------------------------------------------------
-                    # TAB 2 — MODELS & LORA
-                    # ----------------------------------------------------------
-                    with gr.Tab("📦 Models & LoRA"):
-                        on_demand_status_md = gr.Markdown(
-                            value=format_on_demand_status_md(initial_engine_id)
-                        )
-                        with gr.Row():
-                            btn_download_engine = _safe_component(
-                                gr.Button,
-                                value="⬇️ Download Engine Ini Sekarang",
-                                variant="primary",
-                                size="sm",
-                            )
-                            btn_clean_other_engines = _safe_component(
-                                gr.Button,
-                                value="🗑️ Hapus Bobot Engine Lain untuk Hemat Disk",
-                                variant="stop",
-                                size="sm",
-                            )
-
-                        with gr.Accordion("📂 File Overrides (Diffusion / Text Encoder / VAE)", open=True):
-                            unet_override_dd = _safe_component(
-                                gr.Dropdown,
-                                label="Diffusion / UNet (.safetensors / .gguf)",
-                                choices=init_unets,
-                                value=init_u,
-                            )
-                            clip_override_dd = _safe_component(
-                                gr.Dropdown,
-                                label="Text Encoder (CLIP / Qwen / T5 / UMT5)",
-                                choices=init_tes,
-                                value=init_t,
-                            )
-                            with gr.Row():
-                                vae_override_dd = _safe_component(
+                    # ==========================================================
+                    # 5. RIGHT SIDEBAR DRAWER: ADVANCED (3 TABS: Setting, Models, Sampler)
+                    # ==========================================================
+                    with _safe_component(
+                        gr.Column,
+                        scale=5,
+                        visible=True,
+                        elem_classes=["fooocus-drawer-box"],
+                    ) as advanced_drawer:
+                        with gr.Tabs():
+                            # --------------------------------------------------
+                            # TAB 1 — SETTING
+                            # --------------------------------------------------
+                            with gr.Tab("⚙️ Setting"):
+                                engine_selector = _safe_component(
                                     gr.Dropdown,
-                                    label="VAE Model",
-                                    choices=init_vaes,
-                                    value=init_v,
-                                    scale=3,
+                                    label="🧠 Pilih Engine Utama (7 Arsitektur T4)",
+                                    choices=engine_radio_choices,
+                                    value=initial_engine_id,
                                 )
-                                btn_refresh_disk = _safe_component(
-                                    gr.Button,
-                                    value="🔄 Refresh Disk",
-                                    variant="secondary",
-                                    scale=1,
+                                preset_mode_radio = _safe_component(
+                                    gr.Radio,
+                                    label="⚡ Preset Mode (Otomatis Sinkron Steps, CFG, Sampler & Arsitektur)",
+                                    choices=PRESET_MODES,
+                                    value=init_preset_val,
                                 )
-
-                        with gr.Accordion("🧩 3-Slot Custom LoRA Mixer", open=True):
-                            with gr.Row():
-                                lora1_dd = _safe_component(
+                                aspect_dropdown = _safe_component(
                                     gr.Dropdown,
-                                    label="LoRA Slot 1",
-                                    choices=init_loras,
-                                    value="(None)",
-                                    scale=3,
+                                    label="📐 Aspect Ratio / Resolusi",
+                                    choices=init_aspects,
+                                    value=init_aspect_val,
                                 )
-                                lora1_str = _safe_component(
-                                    gr.Slider,
-                                    label="Strength 1",
-                                    minimum=-2.0,
-                                    maximum=2.0,
-                                    step=0.05,
-                                    value=0.8,
-                                    scale=2,
-                                )
-                            with gr.Row():
-                                lora2_dd = _safe_component(
-                                    gr.Dropdown,
-                                    label="LoRA Slot 2",
-                                    choices=init_loras,
-                                    value="(None)",
-                                    scale=3,
-                                )
-                                lora2_str = _safe_component(
-                                    gr.Slider,
-                                    label="Strength 2",
-                                    minimum=-2.0,
-                                    maximum=2.0,
-                                    step=0.05,
-                                    value=0.6,
-                                    scale=2,
-                                )
-                            with gr.Row():
-                                lora3_dd = _safe_component(
-                                    gr.Dropdown,
-                                    label="LoRA Slot 3",
-                                    choices=init_loras,
-                                    value="(None)",
-                                    scale=3,
-                                )
-                                lora3_str = _safe_component(
-                                    gr.Slider,
-                                    label="Strength 3",
-                                    minimum=-2.0,
-                                    maximum=2.0,
-                                    step=0.05,
-                                    value=0.5,
-                                    scale=2,
-                                )
-
-                            with _safe_component(
-                                gr.Group,
-                                visible=init_eng.is_video,
-                            ) as wan_lora_Controls_group:
                                 with gr.Row():
-                                    wan_lightx2v_slider = _safe_component(
+                                    width_slider = _safe_component(
                                         gr.Slider,
-                                        label="⚡ Wan 2.1 Lightx2v 4-Step Strength",
-                                        minimum=0.0,
-                                        maximum=1.5,
-                                        step=0.05,
-                                        value=1.0,
-                                        scale=3,
+                                        label="Width (px)",
+                                        minimum=320,
+                                        maximum=1536,
+                                        step=16,
+                                        value=init_w,
                                     )
-                                    btn_wan_autotune = _safe_component(
-                                        gr.Button,
-                                        value="⚖️ Auto-Tune Custom LoRA",
-                                        variant="secondary",
-                                        scale=2,
+                                    height_slider = _safe_component(
+                                        gr.Slider,
+                                        label="Height (px)",
+                                        minimum=320,
+                                        maximum=1536,
+                                        step=16,
+                                        value=init_h,
                                     )
 
-                        with gr.Accordion("🌐 In-App Universal Downloader (HF · Civitai .com/.red · ModelScope)", open=False):
-                            custom_dl_url_box = _safe_component(
-                                gr.Textbox,
-                                label="Paste Link Model/LoRA (Mendukung |nama_kustom.safetensors)",
-                                placeholder="https://civitai.com/api/download/models/... atau https://huggingface.co/...|my_lora.safetensors",
-                                lines=2,
-                            )
-                            with gr.Row():
-                                custom_dl_folder_dd = _safe_component(
-                                    gr.Dropdown,
-                                    label="Target Folder",
-                                    choices=["loras", "diffusion_models", "text_encoders", "vae", "upscale_models"],
-                                    value="loras",
-                                    scale=2,
-                                )
-                                btn_custom_dl = _safe_component(
-                                    gr.Button,
-                                    value="⬇️ Unduh via Aria2c",
-                                    variant="primary",
-                                    scale=2,
-                                )
-                            with gr.Row():
-                                local_lora_file = _safe_component(
-                                    gr.File,
-                                    label="Atau Upload File .safetensors Lokal",
-                                    file_count="single",
-                                    type="filepath",
-                                    file_types=[".safetensors"],
-                                )
-                                btn_upload_local_lora = _safe_component(
-                                    gr.Button,
-                                    value="⬆️ Pasang ke LoRA Slot 1",
-                                    variant="secondary",
-                                )
+                                # Kontrol Khusus Video (Hanya tampil saat Wan 2.1 aktif)
+                                with _safe_component(
+                                    gr.Group,
+                                    visible=init_eng.is_video,
+                                ) as video_specific_group:
+                                    wan_frames_slider = _safe_component(
+                                        gr.Slider,
+                                        label="🎬 Base Frames ((4k)+1): 17..81 (Default 49 = 3.1 Detik)",
+                                        minimum=17,
+                                        maximum=81,
+                                        step=4,
+                                        value=49,
+                                    )
+                                    wan_fps_dropdown = _safe_component(
+                                        gr.Dropdown,
+                                        label="🎞️ Output FPS (True-Duration Motion Interpolation)",
+                                        choices=WAN21_FPS_CHOICES,
+                                        value=WAN21_FPS_CHOICES[0],
+                                    )
 
-                    # ----------------------------------------------------------
-                    # TAB 3 — SAMPLER & DEVELOPER
-                    # ----------------------------------------------------------
-                    with gr.Tab("🛠️ Sampler & Developer"):
-                        wangp_profile_dd = _safe_component(
-                            gr.Dropdown,
-                            label="🧠 WanGP Memory Profile (mmgp)",
-                            choices=wangp_profile_choices,
-                            value=backend_mgr.memory_manager.active_profile_id,
-                        )
-                        with gr.Row():
-                            steps_slider = _safe_component(
-                                gr.Slider,
-                                label="Steps",
-                                minimum=1,
-                                maximum=60,
-                                step=1,
-                                value=init_def["steps"],
-                            )
-                            cfg_slider = _safe_component(
-                                gr.Slider,
-                                label="CFG Scale",
-                                minimum=1.0,
-                                maximum=10.0,
-                                step=0.1,
-                                value=init_def["cfg"],
-                            )
-                            shift_slider = _safe_component(
-                                gr.Slider,
-                                label="Flow Shift (SD3 / AuraFlow)",
-                                minimum=0.5,
-                                maximum=10.0,
-                                step=0.1,
-                                value=init_def["shift"],
-                                visible=(initial_engine_id in ("moss", "chroma", "wan21")),
-                            )
-                        with gr.Row():
-                            sampler_dd = _safe_component(
-                                gr.Dropdown,
-                                label="Sampler (Seluruh 45 Sampler Resmi ComfyUI)",
-                                choices=SAMPLER_CHOICES,
-                                value=init_def["sampler"],
-                            )
-                            scheduler_dd = _safe_component(
-                                gr.Dropdown,
-                                label="Scheduler (Seluruh 9 Scheduler Resmi ComfyUI)",
-                                choices=SCHEDULER_CHOICES,
-                                value=init_def["scheduler"],
-                            )
+                                # Kontrol Khusus Image (Sembunyi saat Wan 2.1 aktif)
+                                with _safe_component(
+                                    gr.Group,
+                                    visible=(not init_eng.is_video),
+                                ) as image_specific_group:
+                                    batch_count_slider = _safe_component(
+                                        gr.Slider,
+                                        label="🖼️ Batch Count (Jumlah Gambar: 1..4)",
+                                        minimum=1,
+                                        maximum=4,
+                                        step=1,
+                                        value=1,
+                                    )
 
-                        with gr.Accordion("🔬 Pengaturan Spesifik Arsitektur (LazyCache · MOSS SLG · Chroma Beta)", open=True):
-                            with _safe_component(
-                                gr.Row,
-                                visible=(initial_engine_id in ("anima", "moss", "qwen21", "krea2")),
-                            ) as lazycache_arch_row:
-                                use_lazycache_chk = _safe_component(
-                                    gr.Checkbox,
-                                    label="Aktifkan LazyCache (Steps ≥ 12)",
-                                    value=bool(init_def.get("use_lazycache", False)),
+                                negative_prompt_box = _safe_component(
+                                    gr.Textbox,
+                                    label="🚫 Negative Prompt (Otomatis Disesuaikan per Engine · Aktif saat CFG > 1.0)",
+                                    lines=2,
+                                    value=str(
+                                        init_def.get(
+                                            "negative_prompt",
+                                            "worst quality, low quality, blurry, deformed, bad anatomy, watermark, jpeg artifacts",
+                                        )
+                                    ),
                                 )
-                                lazycache_thresh_slider = _safe_component(
-                                    gr.Slider,
-                                    label="LazyCache Threshold",
-                                    minimum=0.05,
-                                    maximum=0.50,
-                                    step=0.05,
-                                    value=0.20,
-                                )
-                            with _safe_component(
-                                gr.Row,
-                                visible=(initial_engine_id == "moss"),
-                            ) as moss_arch_row:
-                                moss_slg_chk = _safe_component(
-                                    gr.Checkbox,
-                                    label="MOSS Skip-Layer Guidance (CFG > 1.0)",
-                                    value=bool(init_def.get("use_slg", False)),
-                                )
-                                moss_skip_layer_num = _safe_component(
+                                seed_number = _safe_component(
                                     gr.Number,
-                                    label="MOSS Skip Layer Index",
-                                    value=int(init_def.get("skip_layer", 22)),
+                                    label="🎲 Seed (-1 = Acak Setiap Render)",
+                                    value=-1,
                                     precision=0,
                                 )
-                            with _safe_component(
-                                gr.Row,
-                                visible=(initial_engine_id == "chroma"),
-                            ) as chroma_arch_row:
-                                chroma_alpha_slider = _safe_component(
-                                    gr.Slider,
-                                    label="Chroma Beta Alpha",
-                                    minimum=0.1,
-                                    maximum=1.0,
-                                    step=0.05,
-                                    value=float(init_def.get("beta_alpha", 0.45)),
-                                )
-                                chroma_beta_slider = _safe_component(
-                                    gr.Slider,
-                                    label="Chroma Beta Beta",
-                                    minimum=0.1,
-                                    maximum=1.0,
-                                    step=0.05,
-                                    value=float(init_def.get("beta_beta", 0.45)),
-                                )
-                                chroma_min_pad_slider = _safe_component(
-                                    gr.Slider,
-                                    label="T5 Min Padding",
-                                    minimum=0,
-                                    maximum=8,
-                                    step=1,
-                                    value=int(init_def.get("min_padding", 1)),
-                                )
 
-                        with gr.Accordion("🖥️ Maintenance & Debug Box (ComfyUI Daemon)", open=False):
-                            daemon_log_box = _safe_component(
-                                gr.Code,
-                                label="ComfyUI Daemon Log",
-                                value="Klik 'Refresh Log' untuk menampilkan log terbaru Headless ComfyUI.",
-                                language="shell",
-                                lines=10,
-                            )
-                            with gr.Row():
-                                btn_refresh_log = _safe_component(
-                                    gr.Button,
-                                    value="🔄 Refresh Log",
-                                    variant="secondary",
-                                    size="sm",
+                            # --------------------------------------------------
+                            # TAB 2 — MODELS & LORA
+                            # --------------------------------------------------
+                            with gr.Tab("📦 Models & LoRA"):
+                                on_demand_status_md = gr.Markdown(
+                                    value=format_on_demand_status_md(initial_engine_id)
                                 )
-                                btn_restart_daemon = _safe_component(
-                                    gr.Button,
-                                    value="♻️ Restart Headless ComfyUI Server",
-                                    variant="stop",
-                                    size="sm",
-                                )
+                                with gr.Row():
+                                    btn_download_engine = _safe_component(
+                                        gr.Button,
+                                        value="⬇️ Download Engine Ini Sekarang",
+                                        variant="primary",
+                                        size="sm",
+                                    )
+                                    btn_clean_other_engines = _safe_component(
+                                        gr.Button,
+                                        value="🗑️ Hapus Bobot Engine Lain untuk Hemat Disk",
+                                        variant="stop",
+                                        size="sm",
+                                    )
 
-                    # ----------------------------------------------------------
-                    # TAB 4 — HISTORY & INSPECTOR
-                    # ----------------------------------------------------------
-                    with gr.Tab("🗂️ History & Inspector"):
+                                with gr.Accordion("📂 File Overrides (Diffusion / Text Encoder / VAE)", open=True):
+                                    unet_override_dd = _safe_component(
+                                        gr.Dropdown,
+                                        label="Diffusion / UNet (.safetensors / .gguf)",
+                                        choices=init_unets,
+                                        value=init_u,
+                                    )
+                                    clip_override_dd = _safe_component(
+                                        gr.Dropdown,
+                                        label="Text Encoder (CLIP / Qwen / T5 / UMT5)",
+                                        choices=init_tes,
+                                        value=init_t,
+                                    )
+                                    with gr.Row():
+                                        vae_override_dd = _safe_component(
+                                            gr.Dropdown,
+                                            label="VAE Model",
+                                            choices=init_vaes,
+                                            value=init_v,
+                                            scale=3,
+                                        )
+                                        btn_refresh_disk = _safe_component(
+                                            gr.Button,
+                                            value="🔄 Refresh Disk",
+                                            variant="secondary",
+                                            scale=1,
+                                        )
+
+                                with gr.Accordion("🧩 3-Slot Custom LoRA Mixer", open=True):
+                                    with gr.Row():
+                                        lora1_dd = _safe_component(
+                                            gr.Dropdown,
+                                            label="LoRA Slot 1",
+                                            choices=init_loras,
+                                            value="(None)",
+                                            scale=3,
+                                        )
+                                        lora1_str = _safe_component(
+                                            gr.Slider,
+                                            label="Strength 1",
+                                            minimum=-2.0,
+                                            maximum=2.0,
+                                            step=0.05,
+                                            value=0.8,
+                                            scale=2,
+                                        )
+                                    with gr.Row():
+                                        lora2_dd = _safe_component(
+                                            gr.Dropdown,
+                                            label="LoRA Slot 2",
+                                            choices=init_loras,
+                                            value="(None)",
+                                            scale=3,
+                                        )
+                                        lora2_str = _safe_component(
+                                            gr.Slider,
+                                            label="Strength 2",
+                                            minimum=-2.0,
+                                            maximum=2.0,
+                                            step=0.05,
+                                            value=0.6,
+                                            scale=2,
+                                        )
+                                    with gr.Row():
+                                        lora3_dd = _safe_component(
+                                            gr.Dropdown,
+                                            label="LoRA Slot 3",
+                                            choices=init_loras,
+                                            value="(None)",
+                                            scale=3,
+                                        )
+                                        lora3_str = _safe_component(
+                                            gr.Slider,
+                                            label="Strength 3",
+                                            minimum=-2.0,
+                                            maximum=2.0,
+                                            step=0.05,
+                                            value=0.5,
+                                            scale=2,
+                                        )
+
+                                    with _safe_component(
+                                        gr.Group,
+                                        visible=init_eng.is_video,
+                                    ) as wan_lora_Controls_group:
+                                        with gr.Row():
+                                            wan_lightx2v_slider = _safe_component(
+                                                gr.Slider,
+                                                label="⚡ Wan 2.1 Lightx2v 4-Step Strength",
+                                                minimum=0.0,
+                                                maximum=1.5,
+                                                step=0.05,
+                                                value=1.0,
+                                                scale=3,
+                                            )
+                                            btn_wan_autotune = _safe_component(
+                                                gr.Button,
+                                                value="⚖️ Auto-Tune Custom LoRA",
+                                                variant="secondary",
+                                                scale=2,
+                                            )
+
+                                with gr.Accordion("🌐 In-App Universal Downloader (HF · Civitai .com/.red · ModelScope)", open=False):
+                                    custom_dl_url_box = _safe_component(
+                                        gr.Textbox,
+                                        label="Paste Link Model/LoRA (Mendukung |nama_kustom.safetensors)",
+                                        placeholder="https://civitai.com/api/download/models/... atau https://huggingface.co/...|my_lora.safetensors",
+                                        lines=2,
+                                    )
+                                    with gr.Row():
+                                        custom_dl_folder_dd = _safe_component(
+                                            gr.Dropdown,
+                                            label="Target Folder",
+                                            choices=["loras", "diffusion_models", "text_encoders", "vae", "upscale_models"],
+                                            value="loras",
+                                            scale=2,
+                                        )
+                                        btn_custom_dl = _safe_component(
+                                            gr.Button,
+                                            value="⬇️ Unduh via Aria2c",
+                                            variant="primary",
+                                            scale=2,
+                                        )
+                                    with gr.Row():
+                                        local_lora_file = _safe_component(
+                                            gr.File,
+                                            label="Atau Upload File .safetensors Lokal",
+                                            file_count="single",
+                                            type="filepath",
+                                            file_types=[".safetensors"],
+                                        )
+                                        btn_upload_local_lora = _safe_component(
+                                            gr.Button,
+                                            value="⬆️ Pasang ke LoRA Slot 1",
+                                            variant="secondary",
+                                        )
+
+                            # --------------------------------------------------
+                            # TAB 3 — SAMPLER & DEVELOPER
+                            # --------------------------------------------------
+                            with gr.Tab("🛠️ Sampler & Developer"):
+                                wangp_profile_dd = _safe_component(
+                                    gr.Dropdown,
+                                    label="🧠 WanGP Memory Profile (mmgp + C++ Native Guard)",
+                                    choices=wangp_profile_choices,
+                                    value=backend_mgr.memory_manager.active_profile_id,
+                                )
+                                with gr.Row():
+                                    steps_slider = _safe_component(
+                                        gr.Slider,
+                                        label="Steps",
+                                        minimum=1,
+                                        maximum=60,
+                                        step=1,
+                                        value=init_def["steps"],
+                                    )
+                                    cfg_slider = _safe_component(
+                                        gr.Slider,
+                                        label="CFG Scale",
+                                        minimum=1.0,
+                                        maximum=10.0,
+                                        step=0.1,
+                                        value=init_def["cfg"],
+                                    )
+                                    shift_slider = _safe_component(
+                                        gr.Slider,
+                                        label="Flow Shift (SD3 / AuraFlow)",
+                                        minimum=0.5,
+                                        maximum=10.0,
+                                        step=0.1,
+                                        value=init_def["shift"],
+                                        visible=(initial_engine_id in ("moss", "chroma", "z_image", "wan21")),
+                                    )
+                                with gr.Row():
+                                    sampler_dd = _safe_component(
+                                        gr.Dropdown,
+                                        label="Sampler (Seluruh 45 Sampler Resmi ComfyUI)",
+                                        choices=SAMPLER_CHOICES,
+                                        value=init_def["sampler"],
+                                    )
+                                    scheduler_dd = _safe_component(
+                                        gr.Dropdown,
+                                        label="Scheduler (Seluruh 9 Scheduler Resmi ComfyUI)",
+                                        choices=SCHEDULER_CHOICES,
+                                        value=init_def["scheduler"],
+                                    )
+
+                                with gr.Accordion("🔬 Pengaturan Spesifik Arsitektur (LazyCache · MOSS SLG · Chroma Beta)", open=True):
+                                    with _safe_component(
+                                        gr.Row,
+                                        visible=(initial_engine_id in ("anima", "moss", "qwen21", "krea2", "chroma", "z_image")),
+                                    ) as lazycache_arch_row:
+                                        use_lazycache_chk = _safe_component(
+                                            gr.Checkbox,
+                                            label="Aktifkan LazyCache (Steps ≥ 8 · Hemat 20–25% Waktu)",
+                                            value=bool(init_def.get("use_lazycache", False)),
+                                        )
+                                        lazycache_thresh_slider = _safe_component(
+                                            gr.Slider,
+                                            label="LazyCache Threshold",
+                                            minimum=0.05,
+                                            maximum=0.50,
+                                            step=0.05,
+                                            value=0.20,
+                                        )
+                                    with _safe_component(
+                                        gr.Row,
+                                        visible=(initial_engine_id == "moss"),
+                                    ) as moss_arch_row:
+                                        moss_slg_chk = _safe_component(
+                                            gr.Checkbox,
+                                            label="MOSS Skip-Layer Guidance (CFG > 1.0)",
+                                            value=bool(init_def.get("use_slg", False)),
+                                        )
+                                        moss_skip_layer_num = _safe_component(
+                                            gr.Number,
+                                            label="MOSS Skip Layer Index",
+                                            value=int(init_def.get("skip_layer", 22)),
+                                            precision=0,
+                                        )
+                                    with _safe_component(
+                                        gr.Row,
+                                        visible=(initial_engine_id == "chroma"),
+                                    ) as chroma_arch_row:
+                                        chroma_alpha_slider = _safe_component(
+                                            gr.Slider,
+                                            label="Chroma Beta Alpha",
+                                            minimum=0.1,
+                                            maximum=1.0,
+                                            step=0.05,
+                                            value=float(init_def.get("beta_alpha", 0.45)),
+                                        )
+                                        chroma_beta_slider = _safe_component(
+                                            gr.Slider,
+                                            label="Chroma Beta Beta",
+                                            minimum=0.1,
+                                            maximum=1.0,
+                                            step=0.05,
+                                            value=float(init_def.get("beta_beta", 0.45)),
+                                        )
+                                        chroma_min_pad_slider = _safe_component(
+                                            gr.Slider,
+                                            label="T5 Min Padding",
+                                            minimum=0,
+                                            maximum=8,
+                                            step=1,
+                                            value=int(init_def.get("min_padding", 1)),
+                                        )
+
+                                with gr.Accordion("🖥️ Maintenance & Debug Box (ComfyUI Daemon)", open=False):
+                                    daemon_log_box = _safe_component(
+                                        gr.Code,
+                                        label="ComfyUI Daemon Log",
+                                        value="Klik 'Refresh Log' untuk menampilkan log terbaru Headless ComfyUI.",
+                                        language="shell",
+                                        lines=10,
+                                    )
+                                    with gr.Row():
+                                        btn_refresh_log = _safe_component(
+                                            gr.Button,
+                                            value="🔄 Refresh Log",
+                                            variant="secondary",
+                                            size="sm",
+                                        )
+                                        btn_restart_daemon = _safe_component(
+                                            gr.Button,
+                                            value="♻️ Restart Headless ComfyUI Server",
+                                            variant="stop",
+                                            size="sm",
+                                        )
+
+            # ==================================================================
+            # TAB UTAMA B — 🗂️ GALERI & HISTORY INSPECTOR (DEDICATED NON-BLOCKING TAB)
+            # ==================================================================
+            with gr.Tab("🗂️ Galeri & History Inspector") as gallery_main_tab:
+                with gr.Row(equal_height=False):
+                    # Kolom Kiri: Grid Thumbnail Cepat (~20 KB JPEG per item)
+                    with gr.Column(scale=7, elem_classes=["fooocus-drawer-box"]):
                         history_summary_md = gr.Markdown("🗂️ Memuat galeri sesi...")
                         with gr.Row():
                             btn_refresh_history = _safe_component(
                                 gr.Button,
-                                value="🔄 Refresh Galeri",
+                                value="🔄 Refresh Galeri Sekarang",
                                 variant="secondary",
                                 size="sm",
                             )
@@ -1025,20 +1027,32 @@ def build_fooocus_studio_app(
                             )
                         zip_download_file = _safe_component(
                             gr.File,
-                            label="Unduh Arsip ZIP Galeri",
+                            label="Unduh Arsip ZIP Galeri (Resolusi Penuh)",
                         )
                         history_gallery = _safe_component(
                             gr.Gallery,
-                            label="Klik Item untuk Melihat Metadata & Memutar Video/Gambar",
-                            columns=3,
-                            height=280,
+                            label="⚡ Fast Thumbnail Grid (Bebas Diklik Tanpa Terganggu Proses Render)",
+                            columns=4,
+                            height=520,
                             object_fit="cover",
                             preview=False,
                         )
+
+                    # Kolom Kanan: Full-Resolution Preview & Tabel Metadata Inspector
+                    with gr.Column(scale=5, elem_classes=["fooocus-drawer-box"]):
+                        gr.Markdown("### 🔍 Pratinjau Resolusi Penuh & Metadata Inspector")
+                        inspector_image_preview = _safe_component(
+                            gr.Image,
+                            label="🖼️ Pratinjau Gambar Resolusi Penuh (.PNG)",
+                            type="filepath",
+                            interactive=False,
+                            height=320,
+                            visible=True,
+                        )
                         inspector_video_preview = _safe_component(
                             gr.Video,
-                            label="🎬 Video Preview (Inspector)",
-                            height=220,
+                            label="🎬 Video Preview (.MP4)",
+                            height=320,
                             visible=False,
                         )
                         with gr.Row():
@@ -1048,6 +1062,12 @@ def build_fooocus_studio_app(
                                 variant="primary",
                                 size="sm",
                             )
+                            btn_send_hist_to_upscaler = _safe_component(
+                                gr.Button,
+                                value="📥 Kirim ke Standalone Upscaler",
+                                variant="secondary",
+                                size="sm",
+                            )
                             btn_delete_history_item = _safe_component(
                                 gr.Button,
                                 value="🗑️ Hapus Item",
@@ -1055,7 +1075,7 @@ def build_fooocus_studio_app(
                                 size="sm",
                             )
                         inspector_meta_md = gr.Markdown(
-                            "Klik salah satu item di atas untuk menampilkan tabel metadata lengkap."
+                            "Klik salah satu item di Galeri sebelah kiri untuk melihat pratinjau resolusi penuh dan tabel metadata lengkap."
                         )
 
         # ======================================================================
@@ -1100,8 +1120,8 @@ def build_fooocus_studio_app(
             else:
                 backend_mgr.memory_manager.set_profile("profile_1_speed")
 
-            show_shift = eng_id in ("moss", "chroma", "wan21")
-            show_lazycache = eng_id in ("anima", "moss", "qwen21", "krea2")
+            show_shift = eng_id in ("moss", "chroma", "z_image", "wan21")
+            show_lazycache = eng_id in ("anima", "moss", "qwen21", "krea2", "chroma", "z_image")
             show_moss = eng_id == "moss"
             show_chroma = eng_id == "chroma"
 
@@ -1439,7 +1459,6 @@ def build_fooocus_studio_app(
                     **timings,
                 },
             )
-            gal_tuples, gal_paths, gal_summary = gal_mgr.list_items()
             stepper_done = render_stepper_html(
                 s1_state="done",
                 s1_val=f"✔️ {timings['t_stage1']}s",
@@ -1458,9 +1477,6 @@ def build_fooocus_studio_app(
                 str(saved_img),
                 stepper_done,
                 render_telemetry_bar_html(backend_mgr, eng_id),
-                gal_tuples,
-                gal_paths,
-                gal_summary,
             )
 
         def on_main_generate(
@@ -1601,7 +1617,6 @@ def build_fooocus_studio_app(
                             **timings,
                         },
                     )
-                    gal_tuples, gal_paths, gal_summary = gal_mgr.list_items()
                     stepper_done = render_stepper_html(
                         s1_state="done",
                         s1_val=f"✔️ {timings['t_stage1']}s",
@@ -1623,13 +1638,10 @@ def build_fooocus_studio_app(
                         str(jpg_tmp) if jpg_tmp.is_file() else "",
                         stepper_done,
                         render_telemetry_bar_html(backend_mgr, eng_id),
-                        gal_tuples,
-                        gal_paths,
-                        gal_summary,
                     )
 
                 # ==============================================================
-                # CABANG B: 5 ENGINE GAMBAR (ANIMA, MOSS, QWEN 2.1, KREA 2, CHROMA)
+                # CABANG B: 6 ENGINE GAMBAR (ANIMA, MOSS, QWEN 2.1, KREA 2, CHROMA, Z-IMAGE)
                 # ==============================================================
                 count = max(1, min(4, int(batch_count)))
                 rendered_gallery_items: List[Tuple[str, str]] = []
@@ -1737,7 +1749,6 @@ def build_fooocus_studio_app(
                             (str(saved_img), f"{eng_id.upper()} · seed {this_seed} ({timings['total_elapsed_sec']}s)")
                         )
 
-                gal_tuples, gal_paths, gal_summary = gal_mgr.list_items()
                 stepper_done = render_stepper_html(
                     s1_state="done",
                     s1_val=f"✔️ {total_s1:.1f}s",
@@ -1759,14 +1770,10 @@ def build_fooocus_studio_app(
                     last_img_path_str,
                     stepper_done,
                     render_telemetry_bar_html(backend_mgr, eng_id),
-                    gal_tuples,
-                    gal_paths,
-                    gal_summary,
                 )
             except Exception as exc:
                 tb = traceback.format_exc()
                 print(tb, flush=True)
-                gal_tuples, gal_paths, gal_summary = gal_mgr.list_items()
                 err_stepper = render_stepper_html(
                     s1_state="idle",
                     s2_state="idle",
@@ -1779,19 +1786,22 @@ def build_fooocus_studio_app(
                     "",
                     err_stepper,
                     render_telemetry_bar_html(backend_mgr, eng_id),
-                    gal_tuples,
-                    gal_paths,
-                    gal_summary,
                 )
 
         def on_inspect_history_item(evt: gr.SelectData, media_paths: List[str]):
             if not media_paths or evt is None or evt.index >= len(media_paths):
-                return gr.update(visible=False, value=None), "Item tidak ditemukan.", ""
+                return (
+                    gr.update(visible=True, value=None),
+                    gr.update(visible=False, value=None),
+                    "Item tidak ditemukan.",
+                    "",
+                )
             selected_path = media_paths[evt.index]
             meta = gal_mgr.get_metadata_for_media(selected_path)
             md = GalleryManager.format_metadata_markdown(meta)
             is_vid = selected_path.lower().endswith(".mp4")
             return (
+                gr.update(visible=not is_vid, value=selected_path if not is_vid else None),
                 gr.update(visible=is_vid, value=selected_path if is_vid else None),
                 md,
                 selected_path,
@@ -1821,7 +1831,24 @@ def build_fooocus_studio_app(
                 gr.update(value=float(meta.get("shift", 1.0))),
                 gr.update(value=int(meta.get("seed", -1))),
                 render_stepper_html(
-                    banner_msg=f"♻️ Parameter dari `{meta.get('file_name', '')}` berhasil disalin ke Studio!"
+                    banner_msg=f"♻️ Parameter dari `{meta.get('file_name', '')}` berhasil disalin ke Studio Workspace!"
+                ),
+            )
+
+        def on_send_history_to_upscaler(selected_media_path: str):
+            if not selected_media_path or str(selected_media_path).lower().endswith(".mp4"):
+                return (
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    render_stepper_html(banner_msg="⚠️ Pilih item gambar (.png) di Galeri terlebih dahulu."),
+                )
+            return (
+                gr.update(value=selected_media_path),
+                gr.update(value=True),
+                gr.update(visible=True),
+                render_stepper_html(
+                    banner_msg=f"📥 Gambar `{Path(selected_media_path).name}` dikirim ke Standalone Upscaler di tab Studio Workspace!"
                 ),
             )
 
@@ -1832,6 +1859,7 @@ def build_fooocus_studio_app(
                 gal_tuples,
                 gal_paths,
                 gal_summary,
+                gr.update(visible=True, value=None),
                 gr.update(visible=False, value=None),
                 "🗑️ Item yang dipilih telah dihapus dari galeri.",
                 "",
@@ -1848,11 +1876,13 @@ def build_fooocus_studio_app(
             fn=lambda v: gr.update(visible=bool(v)),
             inputs=[chk_input_image],
             outputs=[input_image_drawer],
+            queue=False,
         )
         chk_advanced.change(
             fn=lambda v: gr.update(visible=bool(v)),
             inputs=[chk_advanced],
             outputs=[advanced_drawer],
+            queue=False,
         )
 
         engine_selector.change(
@@ -1896,6 +1926,7 @@ def build_fooocus_studio_app(
                 telemetry_html,
                 stepper_bar_html,
             ],
+            queue=False,
         )
 
         preset_mode_radio.change(
@@ -1916,34 +1947,38 @@ def build_fooocus_studio_app(
                 wan_lightx2v_slider,
                 stepper_bar_html,
             ],
+            queue=False,
         )
 
         aspect_dropdown.change(
             fn=on_aspect_change,
             inputs=[engine_selector, aspect_dropdown],
             outputs=[width_slider, height_slider],
+            queue=False,
         )
 
         wan_start_img.change(
             fn=on_wan_start_image_change,
             inputs=[wan_start_img, wan_auto_crop_chk, width_slider, height_slider],
             outputs=[width_slider, height_slider, wan_ratio_info_html],
+            queue=False,
         )
 
         # Quick Motion Tags untuk Wan 2.1
-        btn_motion_push.click(lambda p: append_tag_to_prompt(p, "+ Slow Push-In"), inputs=[prompt_box], outputs=[prompt_box])
-        btn_motion_orbit.click(lambda p: append_tag_to_prompt(p, "+ Orbit Shot"), inputs=[prompt_box], outputs=[prompt_box])
-        btn_motion_pan.click(lambda p: append_tag_to_prompt(p, "+ Smooth Pan"), inputs=[prompt_box], outputs=[prompt_box])
-        btn_motion_wind.click(lambda p: append_tag_to_prompt(p, "+ Wind & Hair"), inputs=[prompt_box], outputs=[prompt_box])
-        btn_motion_hand.click(lambda p: append_tag_to_prompt(p, "+ Handheld Realism"), inputs=[prompt_box], outputs=[prompt_box])
+        btn_motion_push.click(lambda p: append_tag_to_prompt(p, "+ Slow Push-In"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
+        btn_motion_orbit.click(lambda p: append_tag_to_prompt(p, "+ Orbit Shot"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
+        btn_motion_pan.click(lambda p: append_tag_to_prompt(p, "+ Smooth Pan"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
+        btn_motion_wind.click(lambda p: append_tag_to_prompt(p, "+ Wind & Hair"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
+        btn_motion_hand.click(lambda p: append_tag_to_prompt(p, "+ Handheld Realism"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
 
-        # Standalone Upscaler
+        # Standalone Upscaler (Non-Blocking terhadap Galeri via .then)
         send_last_to_upscaler_btn.click(
             fn=lambda p: gr.update(value=p) if p else gr.update(),
             inputs=[last_rendered_image_state],
             outputs=[upscale_input_img],
+            queue=False,
         )
-        run_standalone_upscale_btn.click(
+        up_event = run_standalone_upscale_btn.click(
             fn=on_run_standalone_upscale,
             inputs=[
                 upscale_input_img,
@@ -1957,11 +1992,16 @@ def build_fooocus_studio_app(
                 last_rendered_image_state,
                 stepper_bar_html,
                 telemetry_html,
-                history_gallery,
-                gallery_media_paths_state,
-                history_summary_md,
             ],
             concurrency_limit=1,
+            concurrency_id="gpu_render_queue",
+        )
+        up_event.then(
+            fn=gal_mgr.list_items,
+            inputs=[],
+            outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
+            show_progress="hidden",
+            queue=False,
         )
 
         # Models & LoRA Tab Events
@@ -2006,6 +2046,7 @@ def build_fooocus_studio_app(
                 telemetry_html,
                 stepper_bar_html,
             ],
+            queue=False,
         )
         btn_custom_dl.click(
             fn=on_custom_url_download,
@@ -2025,11 +2066,13 @@ def build_fooocus_studio_app(
             fn=on_upload_local_lora,
             inputs=[local_lora_file, engine_selector],
             outputs=[lora1_dd, lora2_dd, lora3_dd, stepper_bar_html],
+            queue=False,
         )
         btn_wan_autotune.click(
             fn=on_wan_autotune,
             inputs=[],
             outputs=[wan_lightx2v_slider, steps_slider, cfg_slider, stepper_bar_html],
+            queue=False,
         )
 
         # Sampler & Developer Tab Events
@@ -2037,11 +2080,13 @@ def build_fooocus_studio_app(
             fn=on_wangp_profile_change,
             inputs=[wangp_profile_dd, engine_selector],
             outputs=[telemetry_html, stepper_bar_html],
+            queue=False,
         )
         btn_refresh_log.click(
             fn=lambda: backend_mgr.get_recent_logs(40),
             inputs=[],
             outputs=[daemon_log_box],
+            queue=False,
         )
         btn_restart_daemon.click(
             fn=on_restart_daemon,
@@ -2049,8 +2094,8 @@ def build_fooocus_studio_app(
             outputs=[daemon_log_box, telemetry_html, stepper_bar_html],
         )
 
-        # Main Generate / Stop / Flush Events
-        generate_btn.click(
+        # Main Generate / Stop / Flush Events (Non-Blocking terhadap Tab Galeri via .then)
+        gen_event = generate_btn.click(
             fn=on_main_generate,
             inputs=[
                 engine_selector,
@@ -2102,38 +2147,62 @@ def build_fooocus_studio_app(
                 last_rendered_image_state,
                 stepper_bar_html,
                 telemetry_html,
-                history_gallery,
-                gallery_media_paths_state,
-                history_summary_md,
             ],
             concurrency_limit=1,
+            concurrency_id="gpu_render_queue",
+        )
+        gen_event.then(
+            fn=gal_mgr.list_items,
+            inputs=[],
+            outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
+            show_progress="hidden",
+            queue=False,
         )
         stop_btn.click(
             fn=on_stop_execution,
             inputs=[engine_selector],
             outputs=[telemetry_html, stepper_bar_html],
+            queue=False,
         )
         flush_btn.click(
             fn=on_flush_memory,
             inputs=[engine_selector],
             outputs=[telemetry_html, stepper_bar_html],
+            queue=False,
         )
 
-        # History & Inspector Tab Events
+        # Dedicated Gallery Tab Events (Seluruhnya queue=False & show_progress="hidden" agar instan!)
         demo.load(
             fn=gal_mgr.list_items,
             inputs=[],
             outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
+            queue=False,
+        )
+        gallery_main_tab.select(
+            fn=gal_mgr.list_items,
+            inputs=[],
+            outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
+            show_progress="hidden",
+            queue=False,
         )
         btn_refresh_history.click(
             fn=gal_mgr.list_items,
             inputs=[],
             outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
+            show_progress="hidden",
+            queue=False,
         )
         history_gallery.select(
             fn=on_inspect_history_item,
             inputs=[gallery_media_paths_state],
-            outputs=[inspector_video_preview, inspector_meta_md, selected_history_media_state],
+            outputs=[
+                inspector_image_preview,
+                inspector_video_preview,
+                inspector_meta_md,
+                selected_history_media_state,
+            ],
+            show_progress="hidden",
+            queue=False,
         )
         btn_copy_params.click(
             fn=on_copy_history_params,
@@ -2149,6 +2218,13 @@ def build_fooocus_studio_app(
                 seed_number,
                 stepper_bar_html,
             ],
+            queue=False,
+        )
+        btn_send_hist_to_upscaler.click(
+            fn=on_send_history_to_upscaler,
+            inputs=[selected_history_media_state],
+            outputs=[upscale_input_img, chk_input_image, input_image_drawer, stepper_bar_html],
+            queue=False,
         )
         btn_delete_history_item.click(
             fn=on_delete_history_item,
@@ -2157,15 +2233,18 @@ def build_fooocus_studio_app(
                 history_gallery,
                 gallery_media_paths_state,
                 history_summary_md,
+                inspector_image_preview,
                 inspector_video_preview,
                 inspector_meta_md,
                 selected_history_media_state,
             ],
+            queue=False,
         )
         btn_export_zip.click(
             fn=on_export_gallery_zip,
             inputs=[],
             outputs=[zip_download_file],
+            queue=False,
         )
 
     return demo

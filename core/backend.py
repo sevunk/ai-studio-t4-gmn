@@ -218,6 +218,7 @@ class HeadlessComfyManager:
         flushed, msg = self.memory_manager.enforce_engine_transition(
             requested_engine_id=requested_engine_id,
             free_comfy_cb=lambda unload: self.free_memory(unload_models=unload),
+            models_dir=self.comfy_dir / "models",
         )
         self.active_engine_id = requested_engine_id
         return flushed, msg

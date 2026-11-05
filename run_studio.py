@@ -57,8 +57,6 @@ def main() -> None:
 
     configure_cuda_alloc_env()
 
-    # Daftarkan seluruh path direktori kerja & galeri (/content/Studio_Gallery, /content/ComfyUI, /tmp)
-    # ke GRADIO_ALLOWED_PATHS serta parameter allowed_paths di launch() agar tidak pernah terkena InvalidPathError
     allowed_paths = get_gradio_allowed_paths(
         base_dir=BASE_DIR,
         comfy_dir=COMFY_DIR,
@@ -81,7 +79,8 @@ def main() -> None:
         downloader=downloader,
         gallery=gallery,
     )
-    queued_demo = demo.queue(default_concurrency_limit=1)
+    # Gunakan default_concurrency_limit=8 agar Tab Galeri & interaksi UI tetap instan saat GPU sibuk
+    queued_demo = demo.queue(default_concurrency_limit=8)
 
     gradio_port = find_free_port(args.port)
     auth_tuple: Optional[Tuple[str, str]] = None

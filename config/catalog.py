@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Single Source of Truth: Katalog 6 Engine Utama + 3 Model Upscaler + Shared Files + Validasi Ukuran Byte.
+Single Source of Truth: Katalog 7 Engine Utama + 3 Model Upscaler + Shared Files + Validasi Ukuran Byte.
 Seluruh URL dan `min_bytes` telah diaudit langsung terhadap ukuran file aktual di Hugging Face.
 Target Perangkat Keras: Google Colab Tesla T4 GPU (15 GiB VRAM, ~12.7 GiB System RAM, ~70 GiB Disk).
 """
@@ -63,7 +63,7 @@ class ModelFileSpec:
 
 
 # ==============================================================================
-# A. 6 ENGINE UTAMA (RESMI & TERVALIDASI UKURAN AKTUAL HUGGING FACE)
+# A. 7 ENGINE UTAMA (RESMI & TERVALIDASI UKURAN AKTUAL HUGGING FACE)
 # ==============================================================================
 ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
     "anima": {
@@ -112,7 +112,7 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 subdir="loras",
                 filename="anima-turbo-lora-v0.2.safetensors",
                 url="https://huggingface.co/circlestone-labs/Anima-Official-LoRAs/resolve/main/anima-turbo-lora-v0.2.safetensors",
-                min_bytes=120_000_000,  # Aktual HF: 149 MB (148,902,616 bytes)
+                min_bytes=120_000_000,  # Aktual HF: 149 MB
                 description="Anima Official Turbo LoRA v0.2 (Aktual HF: 149 MB)",
             ),
         ],
@@ -162,7 +162,7 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 subdir="loras",
                 filename="moss_sft_8step_dmd.safetensors",
                 url="https://huggingface.co/lodestones/MOSS-Image-SFT-8-steps-dmd/resolve/main/lora.safetensors",
-                min_bytes=50_000_000,  # Aktual HF: 1.19 GB (Rank 128 FP32)
+                min_bytes=50_000_000,  # Aktual HF: 1.19 GB
                 description="MOSS 8-Step DMD Turbo LoRA (Aktual HF: 1.19 GB)",
             ),
         ],
@@ -254,18 +254,18 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
     },
     "chroma": {
         "engine_id": "chroma",
-        "display_name": "5. Chroma1-HD 8.9B (De-Distilled FLUX GGUF Q5_K_M + Real CFG)",
+        "display_name": "5. Chroma1-HD 8.9B (GGUF Q5_K_M + Flash 8-Step LoRA & Real CFG)",
         "short_name": "Chroma1-HD 8.9B",
         "is_video": False,
         "supports_ref_images": False,
         "supports_negative_prompt": True,
         "default_memory_profile": "profile_1_speed",
-        "approx_size_gb": 12.15,
+        "approx_size_gb": 12.32,
         "defaults": {
             "unet": "Chroma1-HD-Q5_K_M.gguf",
             "text_encoder": "t5xxl_fp8_e4m3fn_scaled.safetensors",
             "vae": "ae.safetensors",
-            "turbo_lora": None,
+            "turbo_lora": "Chroma1-Flash_r12-fp32.safetensors",
         },
         "files": [
             ModelFileSpec(
@@ -290,13 +290,65 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 filename="ae.safetensors",
                 url="https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors",
                 min_bytes=300_000_000,  # Aktual HF: 335 MB
-                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB)",
+                shared_with=("chroma", "z_image"),
+                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Z-Image-Turbo)",
+            ),
+            ModelFileSpec(
+                role="lora",
+                subdir="loras",
+                filename="Chroma1-Flash_r12-fp32.safetensors",
+                url="https://huggingface.co/silveroxides/Chroma-LoRAs/resolve/main/Chroma1-Flash/Chroma1-Flash_r12-fp32.safetensors",
+                min_bytes=150_000_000,  # Aktual HF: 169 MB
+                description="Chroma1-Flash r12 Fast CFG=1.0 Turbo LoRA (Aktual HF: 169 MB)",
+            ),
+        ],
+    },
+    "z_image": {
+        "engine_id": "z_image",
+        "display_name": "6. Z-Image-Turbo 6B (Tongyi-MAI INT8 ConvRot + Qwen3 4B FP8 · Bilingual Text & Photo)",
+        "short_name": "Z-Image-Turbo 6B",
+        "is_video": False,
+        "supports_ref_images": False,
+        "supports_negative_prompt": True,
+        "default_memory_profile": "profile_1_speed",
+        "approx_size_gb": 12.16,
+        "defaults": {
+            "unet": "z_image_turbo_int8_convrot.safetensors",
+            "text_encoder": "qwen_3_4b_fp8_mixed.safetensors",
+            "vae": "ae.safetensors",
+            "turbo_lora": None,
+        },
+        "files": [
+            ModelFileSpec(
+                role="diffusion",
+                subdir="diffusion_models",
+                filename="z_image_turbo_int8_convrot.safetensors",
+                url="https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors",
+                min_bytes=5_800_000_000,  # Aktual HF: 6.20 GB
+                description="Tongyi Z-Image-Turbo 6B INT8 ConvRot (Aktual HF: 6.20 GB)",
+            ),
+            ModelFileSpec(
+                role="text_encoder",
+                subdir="text_encoders",
+                filename="qwen_3_4b_fp8_mixed.safetensors",
+                url="https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors",
+                min_bytes=5_200_000_000,  # Aktual HF: 5.63 GB
+                description="Qwen3 4B FP8 Mixed Lumina2 Text Encoder (Aktual HF: 5.63 GB)",
+            ),
+            ModelFileSpec(
+                role="vae",
+                subdir="vae",
+                filename="ae.safetensors",
+                url="https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors",
+                min_bytes=300_000_000,  # Aktual HF: 335 MB
+                shared_with=("chroma", "z_image"),
+                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Chroma1-HD)",
             ),
         ],
     },
     "wan21": {
         "engine_id": "wan21",
-        "display_name": "6. Wan 2.1 I2V 14B 480P (Image-to-Video GGUF Q4_K_S + Lightx2v 4-Step)",
+        "display_name": "7. Wan 2.1 I2V 14B 480P (Image-to-Video GGUF Q4_K_S + Lightx2v 4-Step)",
         "short_name": "Wan 2.1 I2V 14B",
         "is_video": True,
         "supports_ref_images": True,
@@ -358,17 +410,13 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
 # ==============================================================================
 # B. 3 MODEL UPSCALER HEMAT MEMORI (SPANDREL TILED UPSCALER <350MB VRAM)
 # ==============================================================================
-# Hasil Audit HF:
-# - Kim2091/UltraSharp/4x-UltraSharp.safetensors       : 66.9 MB (66,864,028 bytes, FP32)
-# - Kim2091/AnimeSharp/4x-AnimeSharp.safetensors       : 33.5 MB (33,522,824 bytes, FP16)
-# - amd/realesrgan-x4plus-anime-6b/RealESRGAN...6B.pth : 17.9 MB (17,938,769 bytes, FP32)
 UPSCALER_CATALOG: Dict[str, ModelFileSpec] = {
     "4x-UltraSharp.safetensors": ModelFileSpec(
         role="upscaler",
         subdir="upscale_models",
         filename="4x-UltraSharp.safetensors",
         url="https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.safetensors",
-        min_bytes=60_000_000,  # Aktual HF: 66.9 MB (66,864,028 bytes)
+        min_bytes=60_000_000,  # Aktual HF: 66.9 MB
         description="4x-UltraSharp (Default Foto/Realisme · Aktual HF: 66.9 MB)",
     ),
     "4x-AnimeSharp.safetensors": ModelFileSpec(
@@ -376,7 +424,7 @@ UPSCALER_CATALOG: Dict[str, ModelFileSpec] = {
         subdir="upscale_models",
         filename="4x-AnimeSharp.safetensors",
         url="https://huggingface.co/Kim2091/AnimeSharp/resolve/main/4x-AnimeSharp.safetensors",
-        min_bytes=30_000_000,  # Aktual HF: 33.5 MB (FP16 safetensors di Kim2091/AnimeSharp)
+        min_bytes=30_000_000,  # Aktual HF: 33.5 MB FP16
         description="4x-AnimeSharp (Default Anime/Ilustrasi Detail · Aktual HF: 33.5 MB FP16)",
     ),
     "RealESRGAN_x4plus_anime_6B.pth": ModelFileSpec(
@@ -389,8 +437,11 @@ UPSCALER_CATALOG: Dict[str, ModelFileSpec] = {
     ),
 }
 
-# Daftar file yang dibagi antar-engine (tidak boleh dihapus saat membersihkan engine lain jika engine pasangannya aktif)
-SHARED_FILE_KEYS: Set[str] = {"vae/qwen_image_vae.safetensors"}
+# Daftar file yang dibagi antar-engine
+SHARED_FILE_KEYS: Set[str] = {
+    "vae/qwen_image_vae.safetensors",
+    "vae/ae.safetensors",
+}
 
 
 # ==============================================================================
@@ -447,7 +498,7 @@ def get_other_engine_exclusive_files(keep_engine_id: str, models_root: Path = MO
     for eng_id, meta in ENGINE_CATALOG.items():
         if eng_id == keep_engine_id:
             continue
-        for spec in meta["files"]:  # type: ignore[ union-attr ]
+        for spec in meta["files"]:  # type: ignore[union-attr]
             if spec.filename in keep_filenames:
                 continue
             for candidate in spec.candidate_paths(models_root):

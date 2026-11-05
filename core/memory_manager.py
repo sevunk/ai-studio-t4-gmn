@@ -1,13 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-WanGP-Style (`mmgp`) RAM/VRAM Manager & Anti-Crash Engine Switching Guard
+WanGP-Style (`mmgp`) RAM/VRAM Manager & Native C++ Memory Optimizer (`core/memory_manager.py`)
 Khusus untuk Google Colab Tesla T4 (15.0 GiB GPU VRAM & ~12.7 GiB CPU System RAM).
+Dilengkapi akselerator C++ (`core/studio_native_mem.cpp` -> `libstudio_mem.so`):
+- `mallopt(M_MMAP_THRESHOLD, 128 KB)` & `M_ARENA_MAX = 2` (mencegah fragmentasi heap C++ pada GGUF/Safetensors)
+- `malloc_trim(0)` via C++ native bridge
+- `posix_fadvise(..., POSIX_FADV_DONTNEED)` untuk membebaskan Linux VFS page cache dari file bobot yang tidak aktif
+- Fast `/proc/meminfo` C++ reader.
 """
 
 import ctypes
 import gc
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -18,21 +25,122 @@ CUDA_ALLOC_CONF_VALUE = (
 )
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = CUDA_ALLOC_CONF_VALUE
 
-# Ambang batas aman System RAM CPU Colab sebelum terkena Linux OOM Killer (3.8 GiB)
+# Ambang batas darurat System RAM CPU Colab untuk engine yang sama (1.6 GiB)
+# Agar model tetap hangat (Warm-Cache) pada render ke-2 dst. tanpa di-unload paksa.
 PREFLIGHT_MIN_AVAILABLE_RAM_GIB: float = 1.6
+
+_CORE_DIR = Path(__file__).resolve().parent
+_CPP_SRC_PATH = _CORE_DIR / "studio_native_mem.cpp"
+_SO_LIB_PATH = _CORE_DIR / "libstudio_mem.so"
+_NATIVE_LIB: Optional[ctypes.CDLL] = None
+_NATIVE_INIT_DONE: bool = False
+
+
+def load_or_compile_native_mem_lib() -> Optional[ctypes.CDLL]:
+    """
+    Mengompilasi `core/studio_native_mem.cpp` menjadi `core/libstudio_mem.so` secara otomatis
+    menggunakan `g++ -O3 -shared -fPIC` jika belum ada, lalu memuatnya via `ctypes.CDLL`
+    dan menjalankan `studio_init_allocator(128, 128, 2)`.
+    """
+    global _NATIVE_LIB, _NATIVE_INIT_DONE
+    if _NATIVE_INIT_DONE:
+        return _NATIVE_LIB
+
+    _NATIVE_INIT_DONE = True
+    try:
+        need_compile = (
+            _CPP_SRC_PATH.is_file()
+            and (
+                not _SO_LIB_PATH.is_file()
+                or _CPP_SRC_PATH.stat().st_mtime > _SO_LIB_PATH.stat().st_mtime
+            )
+        )
+        if need_compile and shutil.which("g++"):
+            subprocess.run(
+                [
+                    "g++",
+                    "-O3",
+                    "-shared",
+                    "-fPIC",
+                    str(_CPP_SRC_PATH),
+                    "-o",
+                    str(_SO_LIB_PATH),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        if _SO_LIB_PATH.is_file():
+            lib = ctypes.CDLL(str(_SO_LIB_PATH))
+            lib.studio_init_allocator.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            lib.studio_init_allocator.restype = ctypes.c_int
+            lib.studio_aggressive_trim.argtypes = [ctypes.c_size_t]
+            lib.studio_aggressive_trim.restype = ctypes.c_int
+            lib.studio_evict_file_cache.argtypes = [ctypes.c_char_p]
+            lib.studio_evict_file_cache.restype = ctypes.c_int
+            lib.studio_read_meminfo_kib.argtypes = [
+                ctypes.POINTER(ctypes.c_long),
+                ctypes.POINTER(ctypes.c_long),
+            ]
+            lib.studio_read_meminfo_kib.restype = ctypes.c_int
+
+            # Set M_MMAP_THRESHOLD=128KB, M_TRIM_THRESHOLD=128KB, M_ARENA_MAX=2
+            lib.studio_init_allocator(128, 128, 2)
+            _NATIVE_LIB = lib
+    except Exception:
+        _NATIVE_LIB = None
+
+    return _NATIVE_LIB
+
+
+# Inisialisasi C++ allocator sejak modul diimpor
+load_or_compile_native_mem_lib()
 
 
 def configure_cuda_alloc_env() -> str:
-    """Memastikan environment variable PYTORCH_CUDA_ALLOC_CONF aktif."""
+    """Memastikan environment variable PYTORCH_CUDA_ALLOC_CONF dan C++ allocator aktif."""
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = CUDA_ALLOC_CONF_VALUE
+    load_or_compile_native_mem_lib()
     return os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+
+
+def evict_file_page_cache(filepath: Path) -> bool:
+    """
+    Memanggil fungsi C++ `studio_evict_file_cache` (`posix_fadvise(POSIX_FADV_DONTNEED)`)
+    untuk membebaskan Linux VFS page cache dari file bobot model berukuran besar.
+    """
+    lib = load_or_compile_native_mem_lib()
+    if lib is None or not filepath.is_file():
+        return False
+    try:
+        rc = lib.studio_evict_file_cache(str(filepath).encode("utf-8"))
+        return rc == 0
+    except Exception:
+        return False
+
+
+def evict_models_page_cache(models_dir: Path) -> int:
+    """
+    Melepas VFS page cache Linux untuk seluruh file bobot `.safetensors` / `.gguf` di `models_dir`
+    saat transisi engine agar tidak memakan kuota System RAM cgroup Colab.
+    """
+    if not models_dir.exists():
+        return 0
+    evicted = 0
+    for ext in ("*.safetensors", "*.gguf", "*.pth", "*.pt"):
+        for fp in models_dir.rglob(ext):
+            if fp.is_file() and fp.stat().st_size >= 50_000_000:
+                if evict_file_page_cache(fp):
+                    evicted += 1
+    return evicted
 
 
 def trim_native_memory() -> bool:
     """
     Membersihkan garbage collector Python, mengosongkan CUDA caching allocator,
-    dan memanggil `libc.so.6:malloc_trim(0)` agar fragmen heap C++ dari GGUF/Safetensors
-    segera dikembalikan ke kernel Linux Google Colab.
+    dan memanggil C++ `studio_aggressive_trim(0)` (atau fallback `libc.so.6:malloc_trim(0)`)
+    agar fragmen heap C++ dari GGUF/Safetensors segera dikembalikan ke kernel Linux Google Colab.
     """
     gc.collect()
     try:
@@ -44,6 +152,14 @@ def trim_native_memory() -> bool:
     except Exception:
         pass
 
+    lib = load_or_compile_native_mem_lib()
+    if lib is not None:
+        try:
+            lib.studio_aggressive_trim(0)
+            return True
+        except Exception:
+            pass
+
     try:
         libc = ctypes.CDLL("libc.so.6")
         libc.malloc_trim(0)
@@ -54,9 +170,22 @@ def trim_native_memory() -> bool:
 
 def get_system_ram_metrics() -> Tuple[float, float, float]:
     """
-    Membaca `/proc/meminfo` (`MemTotal` & `MemAvailable`) secara akurat di Linux.
-    Mengembalikan tuple: `(used_gib, available_gib, total_gib)`.
+    Membaca `/proc/meminfo` (`MemTotal` & `MemAvailable`) melalui C++ native reader
+    (atau fallback Python). Mengembalikan tuple: `(used_gib, available_gib, total_gib)`.
     """
+    lib = load_or_compile_native_mem_lib()
+    if lib is not None:
+        try:
+            t_kib = ctypes.c_long(0)
+            a_kib = ctypes.c_long(0)
+            if lib.studio_read_meminfo_kib(ctypes.byref(t_kib), ctypes.byref(a_kib)) == 0 and t_kib.value > 0:
+                total_gib = t_kib.value / (1024**2)
+                avail_gib = a_kib.value / (1024**2)
+                used_gib = max(0.0, total_gib - avail_gib)
+                return used_gib, avail_gib, total_gib
+        except Exception:
+            pass
+
     meminfo_path = Path("/proc/meminfo")
     if meminfo_path.exists():
         try:
@@ -71,7 +200,6 @@ def get_system_ram_metrics() -> Tuple[float, float, float]:
         except Exception:
             pass
 
-    # Fallback via os.sysconf
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
         total_pages = os.sysconf("SC_PHYS_PAGES")
@@ -118,7 +246,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
     "profile_1_speed": WanGPMemoryProfile(
         profile_id="profile_1_speed",
         display_name="Profile 1: Speed / VRAM-Resident (Default Image Models)",
-        short_badge="WanGP P1 · VRAM-Resident Speed",
+        short_badge="WanGP P1 · VRAM-Resident + C++ Guard",
         comfy_cli_flags=(
             "--reserve-vram",
             "0.6",
@@ -137,7 +265,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
     "profile_2_lowram": WanGPMemoryProfile(
         profile_id="profile_2_lowram",
         display_name="Profile 2: Low-RAM Sequential Stage (Otomatis Wan 2.1 14B / Anti-OOM)",
-        short_badge="WanGP P2 · Low-RAM Sequential",
+        short_badge="WanGP P2 · Low-RAM + C++ Guard",
         comfy_cli_flags=(
             "--lowvram",
             "--reserve-vram",
@@ -150,7 +278,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
         ),
         sequential_stage_flush=True,
         description=(
-            "Eksekusi bertahap ala WanGP: melakukan flush model & malloc_trim(0) di antara "
+            "Eksekusi bertahap ala WanGP: melakukan flush model & C++ malloc_trim(0) di antara "
             "Conditioning, Sampling, dan Tiled VAE Decode / Upscaling."
         ),
     ),
@@ -159,8 +287,8 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
 
 class WanGPMemoryManager:
     """
-    Mengelola profil memori WanGP, Pre-Flight RAM Watchdog (< 3.8 GiB),
-    dan Engine Transition Guard saat pengguna berganti arsitektur model.
+    Mengelola profil memori WanGP, Pre-Flight RAM Watchdog (< 1.6 GiB),
+    C++ VFS Page-Cache Eviction, dan Engine Transition Guard saat pengguna berganti arsitektur model.
     """
 
     def __init__(
@@ -206,8 +334,9 @@ class WanGPMemoryManager:
     ) -> Tuple[bool, str]:
         """
         Pre-Flight System RAM Watchdog:
-        Membaca `/proc/meminfo` (`MemAvailable`). Jika `< 3.8 GiB`, otomatis memanggil
-        `free_comfy_cb(False)` + `trim_native_memory()` untuk mencegah Linux OOM Killer.
+        Membaca `/proc/meminfo` (`MemAvailable`). Jika `< 1.6 GiB`, otomatis memanggil
+        `free_comfy_cb(False)` + `trim_native_memory()` untuk mencegah Linux OOM Killer
+        tanpa membuang model yang sedang hangat.
         """
         _, avail_before, total_gib = get_system_ram_metrics()
         if avail_before < self.min_available_ram_gib:
@@ -219,9 +348,9 @@ class WanGPMemoryManager:
             trim_native_memory()
             _, avail_after, _ = get_system_ram_metrics()
             msg = (
-                f"[WanGP Watchdog] System RAM rendah ({avail_before:.2f}/{total_gib:.1f} GiB < "
-                f"{self.min_available_ram_gib:.1f} GiB). Otomatis mem-flush model & "
-                f"malloc_trim(0) -> Tersedia: {avail_after:.2f} GiB."
+                f"[WanGP C++ Watchdog] System RAM rendah ({avail_before:.2f}/{total_gib:.1f} GiB < "
+                f"{self.min_available_ram_gib:.1f} GiB). Otomatis mem-flush cache & "
+                f"C++ malloc_trim(0) -> Tersedia: {avail_after:.2f} GiB."
             )
             print(msg, flush=True)
             return True, msg
@@ -231,14 +360,15 @@ class WanGPMemoryManager:
         self,
         requested_engine_id: str,
         free_comfy_cb: Optional[Callable[[bool], None]] = None,
+        models_dir: Optional[Path] = None,
     ) -> Tuple[bool, str]:
         """
         Engine Transition Guard:
         - Jika `requested_engine_id != self.active_engine_id`, WAJIB memanggil
-          `free_comfy_cb(False)` (`POST /free`) + `trim_native_memory()` sebelum merender.
+          `free_comfy_cb(True)` (`POST /free`) + `evict_models_page_cache()` + `trim_native_memory()`
+          sebelum merender.
         - Jika sama, pertahankan model di VRAM/cache ComfyUI agar render ke-2 dst. instan.
         """
-        # Otomatis aktifkan Profile 2 untuk Wan 2.1 14B
         if requested_engine_id == "wan21":
             self.active_profile_id = "profile_2_lowram"
 
@@ -249,17 +379,18 @@ class WanGPMemoryManager:
                     free_comfy_cb(True)
                 except Exception:
                     pass
+            if models_dir is not None:
+                evict_models_page_cache(models_dir)
             trim_native_memory()
             self.active_engine_id = requested_engine_id
             msg = (
-                f"[WanGP Transition Guard] Transisi arsitektur '{previous_engine}' -> "
-                f"'{requested_engine_id}': model lama di-unload & heap C++ dibersihkan."
+                f"[WanGP C++ Transition Guard] Transisi arsitektur '{previous_engine}' -> "
+                f"'{requested_engine_id}': model lama di-unload, page cache & heap C++ dibersihkan."
             )
             print(msg, flush=True)
             return True, msg
 
         self.active_engine_id = requested_engine_id
-        # Tetap jalankan Pre-Flight System RAM Watchdog meskipun engine tidak berubah
         flushed_by_watchdog, watchdog_msg = self.check_preflight_ram(free_comfy_cb=free_comfy_cb)
         if flushed_by_watchdog:
             return True, watchdog_msg

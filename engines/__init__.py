@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Auto-Registry semua class Engine (`engines/__init__.py`)
-Menyediakan akses terpusat ke 6 Engine Utama + 1 Spandrel Tiled Upscaler Engine.
+Menyediakan akses terpusat ke 7 Engine Utama + 1 Spandrel Tiled Upscaler Engine.
 """
 
 from pathlib import Path
@@ -16,6 +16,7 @@ from engines.moss_engine import MossEngine
 from engines.qwen21_engine import Qwen21Engine
 from engines.upscaler_engine import UpscalerEngine
 from engines.wan21_engine import QUICK_MOTION_TAGS, WAN21_FPS_CHOICES, Wan21Engine
+from engines.z_image_engine import ZImageEngine
 
 ENGINE_CLASSES: Dict[str, Type[BaseEngine]] = {
     "anima": AnimaEngine,
@@ -23,11 +24,12 @@ ENGINE_CLASSES: Dict[str, Type[BaseEngine]] = {
     "qwen21": Qwen21Engine,
     "krea2": Krea2Engine,
     "chroma": ChromaEngine,
+    "z_image": ZImageEngine,
     "wan21": Wan21Engine,
     "upscaler": UpscalerEngine,
 }
 
-MAIN_ENGINE_IDS: List[str] = ["anima", "moss", "qwen21", "krea2", "chroma", "wan21"]
+MAIN_ENGINE_IDS: List[str] = ["anima", "moss", "qwen21", "krea2", "chroma", "z_image", "wan21"]
 
 
 def create_engine_registry(comfy_dir: Path = COMFY_DIR) -> Dict[str, BaseEngine]:
@@ -54,6 +56,8 @@ def resolve_engine_id(id_or_display_name: str) -> str:
         return "krea2"
     if "chroma" in lower:
         return "chroma"
+    if "z-image" in lower or "z_image" in lower or "tongyi" in lower:
+        return "z_image"
     if "wan" in lower:
         return "wan21"
     if "upscale" in lower:
@@ -68,6 +72,7 @@ __all__ = [
     "Qwen21Engine",
     "Krea2Engine",
     "ChromaEngine",
+    "ZImageEngine",
     "Wan21Engine",
     "UpscalerEngine",
     "ENGINE_CLASSES",
