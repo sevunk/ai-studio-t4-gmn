@@ -2,12 +2,20 @@
 """
 Gradio 4/5/6 Compatible UI dengan Layout Bergaya Fooocus (`lllyasviel/Fooocus`)
 (`ui/fooocus_app.py`)
-Berangkat dari Checkpoint Resmi `ai-studio-t4_GEMINI.zip` dengan penambahan:
-1. Mendukung 7 Engine Utama (termasuk `6. Tongyi-MAI Z-Image-Turbo 6B` & `5. Chroma1-HD + Flash 8-Step LoRA`).
-2. Tab Utama Tersendiri `🗂️ Galeri & History Inspector (Fast Thumbnail Grid)` yang terpisah dari
-   `🎨 Studio Workspace`, menggunakan cache thumbnail ringan (`*.thumb.jpg` ~20 KB) dan antrean
-   Non-Blocking (`queue=False` + `.then()`) sehingga Galeri termuat instan dan tidak pernah
-   terganggu atau muter-muter saat proses Generate sedang berjalan.
+Fitur Utama:
+1. Top Telemetry Bar (`gr.HTML`): Status Backend, GPU & Active VRAM Bar (GB / 15.0 GB),
+   CPU System RAM Bar (GB / 12.7 GB), Badge Engine Aktif, serta Status WanGP + C++ Memory Guard.
+2. Top-Level Workspace Tabs:
+   - Tab 1 (`🎨 Studio Workspace`):
+     * Center Main Viewport (`gr.Gallery` / `gr.Video`) + 3-Stage Stepper Bar
+     * Bottom Prompt Bar (`🚀 Generate`, `🛑 Stop / Interrupt`, `🧹 Flush RAM/VRAM`) + Fooocus Checkboxes
+     * Bottom Drawer `Input Image` (3 Sub-Tab: `Standalone Upscaler`, `Wan 2.1 Start Frame`, `Qwen 2.1 Multi-Image Edit`)
+     * Right Sidebar Drawer `Advanced` (3 Tab: `⚙️ Setting`, `📦 Models & LoRA`, `🛠️ Sampler & Developer`)
+   - Tab 2 (`🗂️ Galeri & History Inspector` — Non-Blocking & Fast Thumbnail Cache):
+     * Terpisah sepenuhnya dari output event `Generate` yang sedang berjalan (`queue=False`, `show_progress="hidden"`)
+       sehingga pengguna dapat membuka galeri, menginspeksi gambar resolusi penuh / video MP4, menyalin parameter,
+       atau mengirim item ke Standalone Upscaler kapan saja bahkan saat GPU sedang merender!
+     * Memakai Fast Thumbnail Cache (`*.thumb.jpg` ~20 KB) untuk grid galeri agar puluhan item termuat instan.
 """
 
 import inspect
@@ -203,7 +211,7 @@ def render_telemetry_bar_html(
             <div class="fooocus-brand">
                 <h1 class="fooocus-brand-title">⚡ UNIFIED MULTI-ENGINE AI STUDIO (T4 EDITION)</h1>
                 <p class="fooocus-brand-sub">
-                    Fooocus Interface • Headless ComfyUI Backend • WanGP C++ Memory Guard • Disk Kosong: {free_disk_gb:.1f} GiB
+                    Fooocus Interface • 8 Engines (incl. Flux-Fusion V2, Z-Image-Turbo &amp; Chroma Flash) • C++ Memory Guard • Disk Kosong: {free_disk_gb:.1f} GiB
                 </p>
             </div>
             <div class="telemetry-pills-wrap">
@@ -236,7 +244,7 @@ def render_telemetry_bar_html(
                     <div class="telemetry-pill-val" style="color:#a5b4fc;">{snap['active_engine']}</div>
                 </div>
                 <div class="telemetry-pill">
-                    <div class="telemetry-pill-head"><span>WANGP MEMORY PROFILE</span><span>MMGP</span></div>
+                    <div class="telemetry-pill-head"><span>WANGP + C++ GUARD</span><span>MMGP</span></div>
                     <div class="telemetry-pill-val" style="color:#38bdf8;">{snap['wangp_profile']}</div>
                 </div>
             </div>
@@ -412,13 +420,11 @@ def build_fooocus_studio_app(
         )
 
         # ======================================================================
-        # 2. MAIN TOP-LEVEL TABS:
-        #    - TAB A: 🎨 Studio Workspace (Generate & Upscale)
-        #    - TAB B: 🗂️ Galeri & History Inspector (Dedicated Fast Thumbnail Tab)
+        # 2. TOP-LEVEL WORKSPACE TABS (STUDIO WORKSPACE vs DEDICATED GALLERY TAB)
         # ======================================================================
         with gr.Tabs():
             # ==================================================================
-            # TAB UTAMA A — 🎨 STUDIO WORKSPACE
+            # TAB UTAMA 1 — 🎨 STUDIO WORKSPACE
             # ==================================================================
             with gr.Tab("🎨 Studio Workspace"):
                 with gr.Row(equal_height=False):
@@ -451,7 +457,7 @@ def build_fooocus_studio_app(
                         with gr.Row(elem_classes=["fooocus-prompt-row"]):
                             prompt_box = _safe_component(
                                 gr.Textbox,
-                                label="Prompt (Teks Deskriptif, Tag Anime, <image1> Edit Qwen 2.1, atau Gerakan Kamera Wan 2.1)",
+                                label="Prompt (Teks Deskriptif, Tag Anime, Bilingual Z-Image, <image1> Edit Qwen 2.1, atau Kamera Wan 2.1)",
                                 placeholder=init_def["placeholder"],
                                 lines=3,
                                 scale=5,
@@ -611,7 +617,7 @@ def build_fooocus_studio_app(
                                         )
 
                     # ==========================================================
-                    # 5. RIGHT SIDEBAR DRAWER: ADVANCED (3 TABS: Setting, Models, Sampler)
+                    # 5. RIGHT SIDEBAR DRAWER: ADVANCED (3 TABS)
                     # ==========================================================
                     with _safe_component(
                         gr.Column,
@@ -626,7 +632,7 @@ def build_fooocus_studio_app(
                             with gr.Tab("⚙️ Setting"):
                                 engine_selector = _safe_component(
                                     gr.Dropdown,
-                                    label="🧠 Pilih Engine Utama (7 Arsitektur T4)",
+                                    label="🧠 Pilih Engine Utama (8 Arsitektur T4)",
                                     choices=engine_radio_choices,
                                     value=initial_engine_id,
                                 )
@@ -876,7 +882,7 @@ def build_fooocus_studio_app(
                             with gr.Tab("🛠️ Sampler & Developer"):
                                 wangp_profile_dd = _safe_component(
                                     gr.Dropdown,
-                                    label="🧠 WanGP Memory Profile (mmgp + C++ Native Guard)",
+                                    label="🧠 WanGP Memory Profile (mmgp + C++ Native Allocator)",
                                     choices=wangp_profile_choices,
                                     value=backend_mgr.memory_manager.active_profile_id,
                                 )
@@ -899,12 +905,12 @@ def build_fooocus_studio_app(
                                     )
                                     shift_slider = _safe_component(
                                         gr.Slider,
-                                        label="Flow Shift (SD3 / AuraFlow)",
+                                        label="Flow Shift / Flux Guidance",
                                         minimum=0.5,
                                         maximum=10.0,
                                         step=0.1,
                                         value=init_def["shift"],
-                                        visible=(initial_engine_id in ("moss", "chroma", "z_image", "wan21")),
+                                        visible=(initial_engine_id in ("z_image", "flux_fusion", "moss", "chroma", "wan21")),
                                     )
                                 with gr.Row():
                                     sampler_dd = _safe_component(
@@ -923,11 +929,11 @@ def build_fooocus_studio_app(
                                 with gr.Accordion("🔬 Pengaturan Spesifik Arsitektur (LazyCache · MOSS SLG · Chroma Beta)", open=True):
                                     with _safe_component(
                                         gr.Row,
-                                        visible=(initial_engine_id in ("anima", "moss", "qwen21", "krea2", "chroma", "z_image")),
+                                        visible=(initial_engine_id in ("anima", "z_image", "flux_fusion", "moss", "qwen21", "krea2", "chroma")),
                                     ) as lazycache_arch_row:
                                         use_lazycache_chk = _safe_component(
                                             gr.Checkbox,
-                                            label="Aktifkan LazyCache (Steps ≥ 8 · Hemat 20–25% Waktu)",
+                                            label="Aktifkan LazyCache (Steps ≥ 8)",
                                             value=bool(init_def.get("use_lazycache", False)),
                                         )
                                         lazycache_thresh_slider = _safe_component(
@@ -1005,78 +1011,81 @@ def build_fooocus_studio_app(
                                         )
 
             # ==================================================================
-            # TAB UTAMA B — 🗂️ GALERI & HISTORY INSPECTOR (DEDICATED NON-BLOCKING TAB)
+            # TAB UTAMA 2 — 🗂️ GALERI & HISTORY INSPECTOR (DEDICATED & NON-BLOCKING)
             # ==================================================================
-            with gr.Tab("🗂️ Galeri & History Inspector") as gallery_main_tab:
-                with gr.Row(equal_height=False):
-                    # Kolom Kiri: Grid Thumbnail Cepat (~20 KB JPEG per item)
-                    with gr.Column(scale=7, elem_classes=["fooocus-drawer-box"]):
-                        history_summary_md = gr.Markdown("🗂️ Memuat galeri sesi...")
-                        with gr.Row():
-                            btn_refresh_history = _safe_component(
-                                gr.Button,
-                                value="🔄 Refresh Galeri Sekarang",
-                                variant="secondary",
-                                size="sm",
-                            )
-                            btn_export_zip = _safe_component(
-                                gr.Button,
-                                value="📦 Download Seluruh Galeri (ZIP)",
-                                variant="primary",
-                                size="sm",
-                            )
-                        zip_download_file = _safe_component(
-                            gr.File,
-                            label="Unduh Arsip ZIP Galeri (Resolusi Penuh)",
-                        )
-                        history_gallery = _safe_component(
-                            gr.Gallery,
-                            label="⚡ Fast Thumbnail Grid (Bebas Diklik Tanpa Terganggu Proses Render)",
-                            columns=4,
-                            height=520,
-                            object_fit="cover",
-                            preview=False,
-                        )
+            with gr.Tab("🗂️ Galeri & History Inspector"):
+                with _safe_component(gr.Column, elem_classes=["fooocus-drawer-box"]):
+                    with gr.Row():
+                        with gr.Column(scale=7):
+                            history_summary_md = gr.Markdown("🗂️ Memuat galeri sesi...")
+                        with gr.Column(scale=5):
+                            with gr.Row():
+                                btn_refresh_history = _safe_component(
+                                    gr.Button,
+                                    value="🔄 Refresh Galeri (Instan)",
+                                    variant="secondary",
+                                    size="sm",
+                                )
+                                btn_export_zip = _safe_component(
+                                    gr.Button,
+                                    value="📦 Download Seluruh Galeri (ZIP)",
+                                    variant="primary",
+                                    size="sm",
+                                )
 
-                    # Kolom Kanan: Full-Resolution Preview & Tabel Metadata Inspector
-                    with gr.Column(scale=5, elem_classes=["fooocus-drawer-box"]):
-                        gr.Markdown("### 🔍 Pratinjau Resolusi Penuh & Metadata Inspector")
-                        inspector_image_preview = _safe_component(
-                            gr.Image,
-                            label="🖼️ Pratinjau Gambar Resolusi Penuh (.PNG)",
-                            type="filepath",
-                            interactive=False,
-                            height=320,
-                            visible=True,
-                        )
-                        inspector_video_preview = _safe_component(
-                            gr.Video,
-                            label="🎬 Video Preview (.MP4)",
-                            height=320,
-                            visible=False,
-                        )
-                        with gr.Row():
-                            btn_copy_params = _safe_component(
-                                gr.Button,
-                                value="♻️ Salin Parameter ke Studio",
-                                variant="primary",
-                                size="sm",
+                    with gr.Row(equal_height=False):
+                        # Kolom Kiri: Grid Galeri Cepat berbasis Thumbnail JPEG (~20 KB)
+                        with gr.Column(scale=7):
+                            history_gallery = _safe_component(
+                                gr.Gallery,
+                                label="🖼️ Grid Galeri Sesi (Fast Thumbnail Cache — Klik Item untuk Melihat Resolusi Penuh & Metadata)",
+                                columns=4,
+                                height=540,
+                                object_fit="cover",
+                                preview=False,
                             )
-                            btn_send_hist_to_upscaler = _safe_component(
-                                gr.Button,
-                                value="📥 Kirim ke Standalone Upscaler",
-                                variant="secondary",
-                                size="sm",
+                            zip_download_file = _safe_component(
+                                gr.File,
+                                label="📦 Unduh Arsip ZIP Seluruh Galeri (PNG + MP4 + JSON)",
                             )
-                            btn_delete_history_item = _safe_component(
-                                gr.Button,
-                                value="🗑️ Hapus Item",
-                                variant="stop",
-                                size="sm",
+
+                        # Kolom Kanan: Full-Resolution Preview + Action Buttons + Metadata Inspector
+                        with gr.Column(scale=5):
+                            inspector_image_preview = _safe_component(
+                                gr.Image,
+                                label="🖼️ Pratinjau Resolusi Penuh (PNG Asli — Klik Ikon Pojok Kanan Atas untuk Unduh / Layar Penuh)",
+                                type="filepath",
+                                height=320,
+                                visible=True,
                             )
-                        inspector_meta_md = gr.Markdown(
-                            "Klik salah satu item di Galeri sebelah kiri untuk melihat pratinjau resolusi penuh dan tabel metadata lengkap."
-                        )
+                            inspector_video_preview = _safe_component(
+                                gr.Video,
+                                label="🎬 Video Player (MP4 Asli)",
+                                height=320,
+                                visible=False,
+                            )
+                            with gr.Row():
+                                btn_copy_params = _safe_component(
+                                    gr.Button,
+                                    value="♻️ Salin Parameter ke Studio",
+                                    variant="primary",
+                                    size="sm",
+                                )
+                                btn_send_selected_to_upscaler = _safe_component(
+                                    gr.Button,
+                                    value="🔍 Kirim ke Standalone Upscaler",
+                                    variant="secondary",
+                                    size="sm",
+                                )
+                                btn_delete_history_item = _safe_component(
+                                    gr.Button,
+                                    value="🗑️ Hapus Item",
+                                    variant="stop",
+                                    size="sm",
+                                )
+                            inspector_meta_md = gr.Markdown(
+                                "Klik salah satu gambar atau video di sebelah kiri untuk melihat pratinjau resolusi penuh dan tabel metadata lengkap."
+                            )
 
         # ======================================================================
         # 6. CALLBACKS & EVENT HANDLERS
@@ -1120,8 +1129,8 @@ def build_fooocus_studio_app(
             else:
                 backend_mgr.memory_manager.set_profile("profile_1_speed")
 
-            show_shift = eng_id in ("moss", "chroma", "z_image", "wan21")
-            show_lazycache = eng_id in ("anima", "moss", "qwen21", "krea2", "chroma", "z_image")
+            show_shift = eng_id in ("z_image", "flux_fusion", "moss", "chroma", "wan21")
+            show_lazycache = eng_id in ("anima", "z_image", "flux_fusion", "moss", "qwen21", "krea2", "chroma")
             show_moss = eng_id == "moss"
             show_chroma = eng_id == "chroma"
 
@@ -1641,7 +1650,7 @@ def build_fooocus_studio_app(
                     )
 
                 # ==============================================================
-                # CABANG B: 6 ENGINE GAMBAR (ANIMA, MOSS, QWEN 2.1, KREA 2, CHROMA, Z-IMAGE)
+                # CABANG B: 6 ENGINE GAMBAR (ANIMA, Z-IMAGE, MOSS, QWEN 2.1, KREA 2, CHROMA)
                 # ==============================================================
                 count = max(1, min(4, int(batch_count)))
                 rendered_gallery_items: List[Tuple[str, str]] = []
@@ -1801,8 +1810,8 @@ def build_fooocus_studio_app(
             md = GalleryManager.format_metadata_markdown(meta)
             is_vid = selected_path.lower().endswith(".mp4")
             return (
-                gr.update(visible=not is_vid, value=selected_path if not is_vid else None),
-                gr.update(visible=is_vid, value=selected_path if is_vid else None),
+                gr.update(visible=(not is_vid), value=(selected_path if not is_vid else None)),
+                gr.update(visible=is_vid, value=(selected_path if is_vid else None)),
                 md,
                 selected_path,
             )
@@ -1835,20 +1844,18 @@ def build_fooocus_studio_app(
                 ),
             )
 
-        def on_send_history_to_upscaler(selected_media_path: str):
-            if not selected_media_path or str(selected_media_path).lower().endswith(".mp4"):
+        def on_send_selected_to_upscaler(selected_media_path: str):
+            if not selected_media_path or selected_media_path.lower().endswith(".mp4"):
                 return (
                     gr.update(),
                     gr.update(),
-                    gr.update(),
-                    render_stepper_html(banner_msg="⚠️ Pilih item gambar (.png) di Galeri terlebih dahulu."),
+                    render_stepper_html(banner_msg="⚠️ Pilih sebuah item gambar (.png) di Galeri untuk dikirim ke Standalone Upscaler."),
                 )
             return (
-                gr.update(value=selected_media_path),
                 gr.update(value=True),
-                gr.update(visible=True),
+                gr.update(value=selected_media_path),
                 render_stepper_html(
-                    banner_msg=f"📥 Gambar `{Path(selected_media_path).name}` dikirim ke Standalone Upscaler di tab Studio Workspace!"
+                    banner_msg=f"🔍 Gambar `{Path(selected_media_path).name}` telah dimuat ke Standalone Upscaler di tab Studio Workspace!"
                 ),
             )
 
@@ -1870,7 +1877,7 @@ def build_fooocus_studio_app(
             return str(zp) if zp else None
 
         # ======================================================================
-        # 7. BINDING SELURUH EVENT LISTENER
+        # 7. BINDING SELURUH EVENT LISTENER (DENGAN NON-BLOCKING GALLERY QUEUE)
         # ======================================================================
         chk_input_image.change(
             fn=lambda v: gr.update(visible=bool(v)),
@@ -1971,14 +1978,14 @@ def build_fooocus_studio_app(
         btn_motion_wind.click(lambda p: append_tag_to_prompt(p, "+ Wind & Hair"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
         btn_motion_hand.click(lambda p: append_tag_to_prompt(p, "+ Handheld Realism"), inputs=[prompt_box], outputs=[prompt_box], queue=False)
 
-        # Standalone Upscaler (Non-Blocking terhadap Galeri via .then)
+        # Standalone Upscaler (Non-Blocking terhadap History Gallery)
         send_last_to_upscaler_btn.click(
             fn=lambda p: gr.update(value=p) if p else gr.update(),
             inputs=[last_rendered_image_state],
             outputs=[upscale_input_img],
             queue=False,
         )
-        up_event = run_standalone_upscale_btn.click(
+        upscale_evt = run_standalone_upscale_btn.click(
             fn=on_run_standalone_upscale,
             inputs=[
                 upscale_input_img,
@@ -1994,9 +2001,8 @@ def build_fooocus_studio_app(
                 telemetry_html,
             ],
             concurrency_limit=1,
-            concurrency_id="gpu_render_queue",
         )
-        up_event.then(
+        upscale_evt.then(
             fn=gal_mgr.list_items,
             inputs=[],
             outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
@@ -2094,8 +2100,11 @@ def build_fooocus_studio_app(
             outputs=[daemon_log_box, telemetry_html, stepper_bar_html],
         )
 
-        # Main Generate / Stop / Flush Events (Non-Blocking terhadap Tab Galeri via .then)
-        gen_event = generate_btn.click(
+        # Main Generate / Stop / Flush Events
+        # PENTING: history_gallery TIDAK dimasukkan ke dalam outputs langsung generate_btn.click(...)
+        # agar selama proses render berjalan, tab "🗂️ Galeri & History Inspector" TIDAK terkunci oleh
+        # loading spinner Gradio! Sebagai gantinya, galeri diperbarui secara instan & senyap melalui .then(...)
+        gen_evt = generate_btn.click(
             fn=on_main_generate,
             inputs=[
                 engine_selector,
@@ -2149,15 +2158,15 @@ def build_fooocus_studio_app(
                 telemetry_html,
             ],
             concurrency_limit=1,
-            concurrency_id="gpu_render_queue",
         )
-        gen_event.then(
+        gen_evt.then(
             fn=gal_mgr.list_items,
             inputs=[],
             outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
             show_progress="hidden",
             queue=False,
         )
+
         stop_btn.click(
             fn=on_stop_execution,
             inputs=[engine_selector],
@@ -2171,14 +2180,8 @@ def build_fooocus_studio_app(
             queue=False,
         )
 
-        # Dedicated Gallery Tab Events (Seluruhnya queue=False & show_progress="hidden" agar instan!)
+        # Dedicated Galeri & History Inspector Tab Events (100% Non-Blocking: queue=False)
         demo.load(
-            fn=gal_mgr.list_items,
-            inputs=[],
-            outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
-            queue=False,
-        )
-        gallery_main_tab.select(
             fn=gal_mgr.list_items,
             inputs=[],
             outputs=[history_gallery, gallery_media_paths_state, history_summary_md],
@@ -2218,12 +2221,14 @@ def build_fooocus_studio_app(
                 seed_number,
                 stepper_bar_html,
             ],
+            show_progress="hidden",
             queue=False,
         )
-        btn_send_hist_to_upscaler.click(
-            fn=on_send_history_to_upscaler,
+        btn_send_selected_to_upscaler.click(
+            fn=on_send_selected_to_upscaler,
             inputs=[selected_history_media_state],
-            outputs=[upscale_input_img, chk_input_image, input_image_drawer, stepper_bar_html],
+            outputs=[chk_input_image, upscale_input_img, stepper_bar_html],
+            show_progress="hidden",
             queue=False,
         )
         btn_delete_history_item.click(
@@ -2238,6 +2243,7 @@ def build_fooocus_studio_app(
                 inspector_meta_md,
                 selected_history_media_state,
             ],
+            show_progress="hidden",
             queue=False,
         )
         btn_export_zip.click(
