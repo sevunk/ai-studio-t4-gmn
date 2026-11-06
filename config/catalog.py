@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Single Source of Truth: Katalog 7 Engine Utama + 3 Model Upscaler + Shared Files + Validasi Ukuran Byte.
+Single Source of Truth: Katalog 8 Engine Utama + 3 Model Upscaler + Shared Files + Validasi Ukuran Byte.
 Seluruh URL dan `min_bytes` telah diaudit langsung terhadap ukuran file aktual di Hugging Face.
 Target Perangkat Keras: Google Colab Tesla T4 GPU (15 GiB VRAM, ~12.7 GiB System RAM, ~70 GiB Disk).
 """
@@ -63,7 +63,7 @@ class ModelFileSpec:
 
 
 # ==============================================================================
-# A. 7 ENGINE UTAMA (RESMI & TERVALIDASI UKURAN AKTUAL HUGGING FACE)
+# A. 8 ENGINE UTAMA (RESMI & TERVALIDASI UKURAN AKTUAL HUGGING FACE)
 # ==============================================================================
 ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
     "anima": {
@@ -282,7 +282,8 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 filename="t5xxl_fp8_e4m3fn_scaled.safetensors",
                 url="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn_scaled.safetensors",
                 min_bytes=4_500_000_000,  # Aktual HF: 5.16 GB
-                description="T5-XXL FP8 Scaled Text Encoder (Aktual HF: 5.16 GB)",
+                shared_with=("chroma", "flux_fusion"),
+                description="T5-XXL FP8 Scaled Text Encoder (Aktual HF: 5.16 GB — Shared dengan Flux-Fusion V2)",
             ),
             ModelFileSpec(
                 role="vae",
@@ -290,8 +291,8 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 filename="ae.safetensors",
                 url="https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors",
                 min_bytes=300_000_000,  # Aktual HF: 335 MB
-                shared_with=("chroma", "z_image"),
-                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Z-Image-Turbo)",
+                shared_with=("chroma", "z_image", "flux_fusion"),
+                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Z-Image & Flux-Fusion V2)",
             ),
             ModelFileSpec(
                 role="lora",
@@ -341,14 +342,67 @@ ENGINE_CATALOG: Dict[str, Dict[str, object]] = {
                 filename="ae.safetensors",
                 url="https://huggingface.co/Comfy-Org/Z-Image-Turbo/resolve/main/split_files/vae/ae.safetensors",
                 min_bytes=300_000_000,  # Aktual HF: 335 MB
-                shared_with=("chroma", "z_image"),
-                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Chroma1-HD)",
+                shared_with=("chroma", "z_image", "flux_fusion"),
+                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Chroma & Flux-Fusion V2)",
+            ),
+        ],
+    },
+    "flux_fusion": {
+        "engine_id": "flux_fusion",
+        "display_name": "7. Flux-Fusion V2 12B (Anibaaal 4-Step Schnell/Dev/Hyper Merge GGUF Q4_K_M)",
+        "short_name": "Flux-Fusion V2 12B",
+        "is_video": False,
+        "supports_ref_images": False,
+        "supports_negative_prompt": True,
+        "default_memory_profile": "profile_1_speed",
+        "approx_size_gb": 12.66,
+        "defaults": {
+            "unet": "FluxFusionV2-Q4_K_M.gguf",
+            "text_encoder": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+            "clip_l": "clip_l.safetensors",
+            "vae": "ae.safetensors",
+            "turbo_lora": None,
+        },
+        "files": [
+            ModelFileSpec(
+                role="diffusion",
+                subdir="diffusion_models",
+                filename="FluxFusionV2-Q4_K_M.gguf",
+                url="https://huggingface.co/Anibaaal/Flux-Fusion-V2-4step-merge-gguf-nf4/resolve/main/GGUF/FluxFusionV2-Q4_K_M.gguf",
+                min_bytes=6_500_000_000,  # Aktual HF: 6.92 GB
+                description="Anibaaal Flux-Fusion V2 12B 4-Step Merge GGUF Q4_K_M (Aktual HF: 6.92 GB)",
+            ),
+            ModelFileSpec(
+                role="text_encoder",
+                subdir="text_encoders",
+                filename="t5xxl_fp8_e4m3fn_scaled.safetensors",
+                url="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn_scaled.safetensors",
+                min_bytes=4_500_000_000,  # Aktual HF: 5.16 GB
+                shared_with=("chroma", "flux_fusion"),
+                description="T5-XXL FP8 Scaled Text Encoder (Aktual HF: 5.16 GB — Shared dengan Chroma1-HD)",
+            ),
+            ModelFileSpec(
+                role="text_encoder",
+                subdir="text_encoders",
+                filename="clip_l.safetensors",
+                url="https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+                min_bytes=230_000_000,  # Aktual HF: 246 MB
+                description="CLIP-L FLUX Dual Text Encoder (Aktual HF: 246 MB)",
+            ),
+            ModelFileSpec(
+                role="vae",
+                subdir="vae",
+                filename="ae.safetensors",
+                url="https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors",
+                min_bytes=300_000_000,  # Aktual HF: 335 MB
+                shared_with=("chroma", "z_image", "flux_fusion"),
+                description="FLUX AutoEncoder VAE (Aktual HF: 335 MB — Shared dengan Chroma & Z-Image)",
             ),
         ],
     },
     "wan21": {
         "engine_id": "wan21",
-        "display_name": "7. Wan 2.1 I2V 14B 480P (Image-to-Video GGUF Q4_K_S + Lightx2v 4-Step)",
+        "display_name": "8. Wan 2.1 I2V 14B 480P (Image-to-Video GGUF Q4_K_S + Lightx2v 4-Step)",
         "short_name": "Wan 2.1 I2V 14B",
         "is_video": True,
         "supports_ref_images": True,
@@ -441,6 +495,7 @@ UPSCALER_CATALOG: Dict[str, ModelFileSpec] = {
 SHARED_FILE_KEYS: Set[str] = {
     "vae/qwen_image_vae.safetensors",
     "vae/ae.safetensors",
+    "text_encoders/t5xxl_fp8_e4m3fn_scaled.safetensors",
 }
 
 
