@@ -25,9 +25,9 @@ CUDA_ALLOC_CONF_VALUE = (
 )
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = CUDA_ALLOC_CONF_VALUE
 
-# Ambang batas darurat System RAM CPU Colab untuk engine yang sama (1.6 GiB)
+# Ambang batas darurat System RAM CPU Colab untuk engine yang sama (1.2 GiB)
 # Agar model tetap hangat (Warm-Cache) pada render ke-2 dst. tanpa di-unload paksa.
-PREFLIGHT_MIN_AVAILABLE_RAM_GIB: float = 1.6
+PREFLIGHT_MIN_AVAILABLE_RAM_GIB: float = 1.2
 
 _CORE_DIR = Path(__file__).resolve().parent
 _CPP_SRC_PATH = _CORE_DIR / "studio_native_mem.cpp"
@@ -242,6 +242,11 @@ class WanGPMemoryProfile:
     description: str
 
 
+# CATATAN PENTING HASIL AUDIT 8 ENGINE:
+# - JANGAN memasang `--fp16-unet` agar model native BF16 (Anima), INT8 ConvRot (MOSS, Qwen 2.1, Z-Image),
+#   dan GGUF (Krea 2, Chroma, Flux-Fusion, Wan 2.1) berjalan di presisi aslinya tanpa overhead konversi dtype.
+# - Gunakan `--reserve-vram 0.4` (memberikan +200 MB ekstra ruang VRAM usable untuk UNet dibanding 0.6).
+# - Pertahankan `--fp16-vae` karena menghemat VRAM secara signifikan saat decoding gambar/video tanpa mengurangi kualitas.
 WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
     "profile_1_speed": WanGPMemoryProfile(
         profile_id="profile_1_speed",
@@ -249,8 +254,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
         short_badge="WanGP P1 · VRAM-Resident + C++ Guard",
         comfy_cli_flags=(
             "--reserve-vram",
-            "0.6",
-            "--fp16-unet",
+            "0.4",
             "--fp16-vae",
             "--use-pytorch-cross-attention",
             "--preview-method",
@@ -259,7 +263,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
         sequential_stage_flush=False,
         description=(
             "Model DiT (3.9 GB - 7.9 GB) bertahan penuh di VRAM 15 GB T4 selama sampling "
-            "tanpa layer swapping lambat."
+            "tanpa konversi dtype paksa."
         ),
     ),
     "profile_2_lowram": WanGPMemoryProfile(
@@ -269,8 +273,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
         comfy_cli_flags=(
             "--lowvram",
             "--reserve-vram",
-            "0.6",
-            "--fp16-unet",
+            "0.4",
             "--fp16-vae",
             "--use-pytorch-cross-attention",
             "--preview-method",
@@ -287,7 +290,7 @@ WANGP_PROFILES: Dict[str, WanGPMemoryProfile] = {
 
 class WanGPMemoryManager:
     """
-    Mengelola profil memori WanGP, Pre-Flight RAM Watchdog (< 1.6 GiB),
+    Mengelola profil memori WanGP, Pre-Flight RAM Watchdog (< 1.2 GiB),
     C++ VFS Page-Cache Eviction, dan Engine Transition Guard saat pengguna berganti arsitektur model.
     """
 
@@ -334,7 +337,7 @@ class WanGPMemoryManager:
     ) -> Tuple[bool, str]:
         """
         Pre-Flight System RAM Watchdog:
-        Membaca `/proc/meminfo` (`MemAvailable`). Jika `< 1.6 GiB`, otomatis memanggil
+        Membaca `/proc/meminfo` (`MemAvailable`). Jika `< 1.2 GiB`, otomatis memanggil
         `free_comfy_cb(False)` + `trim_native_memory()` untuk mencegah Linux OOM Killer
         tanpa membuang model yang sedang hangat.
         """
