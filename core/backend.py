@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Headless ComfyUI Daemon Manager & Cold-Load Resilient WebSocket Client (`core/backend.py`)
+Headless ComfyUI Daemon Manager & Smart WebSocket Client (`core/backend.py`)
 Mengintegrasikan:
-- WanGP-style Memory Manager (`WanGPMemoryManager`, `trim_native_memory()`, Pre-Flight RAM Watchdog)
-- Engine Transition Guard (`self.active_engine_id` -> otomatis `POST /free` + `malloc_trim(0)` saat ganti engine)
-- WebSocket Client dengan socket timeout 4.0 detik yang tahan terhadap cold-load bobot 6–10 GB di disk Colab
+- WanGP-style Memory Manager + Native C++ RAM & VFS Page-Cache Controller (`WanGPMemoryManager`, `trim_native_memory()`, Pre-Flight RAM Watchdog)
+- Engine Transition Guard (`self.active_engine_id` -> otomatis `POST /free` + C++ `POSIX_FADV_DONTNEED` + `malloc_trim(0)` saat ganti engine)
+- In-Memory Node & Sampler Cache (`self._node_cache`, `self._samplers_cache`) agar klik Generate memiliki 0.0 detik overhead HTTP pre-flight
+- Smart Phase-Aware WebSocket Client: membedakan fase `is_cold_loading` (baca bobot awal) vs fase `is_sampling` (Steps 1/N..N/N)
+  sehingga tidak pernah menampilkan label 'Cold-load' palsu di tengah step maupun mengganggu ComfyUI dengan polling `/history` setiap 4 detik.
 - Auto-Heal Daemon: otomatis mendeteksi jika proses ComfyUI mati dan menyalakannya kembali dengan `self.start()`.
 """
 
@@ -33,7 +35,7 @@ from core.memory_manager import (
 
 
 class HeadlessComfyManager:
-    """Mengelola siklus hidup server Headless ComfyUI, memori WanGP, dan eksekusi workflow."""
+    """Mengelola siklus hidup server Headless ComfyUI, memori WanGP + C++, dan eksekusi workflow."""
 
     def __init__(
         self,
@@ -53,6 +55,9 @@ class HeadlessComfyManager:
         self.memory_manager = memory_manager or WanGPMemoryManager()
         self.active_engine_id: Optional[str] = None
         self._lock = threading.Lock()
+        # Cache in-memory untuk menghindari request HTTP berulang ke /object_info pada setiap klik Generate
+        self._node_cache: Dict[str, bool] = {}
+        self._samplers_cache: Optional[Tuple[List[str], List[str]]] = None
 
     def is_ready(self) -> bool:
         """Memeriksa apakah endpoint `/system_stats` ComfyUI merespons HTTP 200."""
@@ -66,6 +71,8 @@ class HeadlessComfyManager:
     def stop(self) -> None:
         """Menghentikan proses ComfyUI Headless dengan bersih."""
         with self._lock:
+            self._node_cache.clear()
+            self._samplers_cache = None
             if self.process is not None and self.process.poll() is None:
                 try:
                     self.process.terminate()
@@ -182,7 +189,7 @@ class HeadlessComfyManager:
     def free_memory(self, unload_models: bool = True) -> str:
         """
         Memanggil endpoint `POST /free` di ComfyUI lalu mengeksekusi `trim_native_memory()`
-        (`gc.collect()`, `torch.cuda.empty_cache()`, `libc.malloc_trim(0)`).
+        (`gc.collect()`, `torch.cuda.empty_cache()`, C++ `studio_aggressive_trim()`).
         """
         status_note = ""
         if self.is_ready():
@@ -208,12 +215,12 @@ class HeadlessComfyManager:
         if unload_models:
             self.active_engine_id = None
             self.memory_manager.active_engine_id = None
-        return f"RAM & VRAM dibersihkan ({status_note}, malloc_trim={'OK' if trimmed else 'N/A'})."
+        return f"RAM & VRAM dibersihkan ({status_note}, C++ malloc_trim={'OK' if trimmed else 'N/A'})."
 
     def prepare_for_engine(self, requested_engine_id: str) -> Tuple[bool, str]:
         """
-        Menjalankan Engine Transition Guard & Pre-Flight System RAM Watchdog
-        sebelum mengirim workflow ke ComfyUI.
+        Menjalankan Engine Transition Guard, C++ Page-Cache Eviction (`POSIX_FADV_DONTNEED`),
+        & Pre-Flight System RAM Watchdog sebelum mengirim workflow ke ComfyUI.
         """
         flushed, msg = self.memory_manager.enforce_engine_transition(
             requested_engine_id=requested_engine_id,
@@ -224,7 +231,9 @@ class HeadlessComfyManager:
         return flushed, msg
 
     def get_samplers_and_schedulers(self) -> Tuple[List[str], List[str]]:
-        """Mengambil daftar sampler_name dan scheduler dinamis dari /object_info/KSampler jika server aktif."""
+        """Mengambil daftar sampler_name dan scheduler dinamis dari /object_info/KSampler (dengan in-memory cache)."""
+        if self._samplers_cache is not None:
+            return self._samplers_cache
         if not self.is_ready():
             return [], []
         try:
@@ -232,24 +241,27 @@ class HeadlessComfyManager:
             with urllib.request.urlopen(req, timeout=4.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 req_in = data.get("KSampler", {}).get("input", {}).get("required", {})
-                samplers = req_in.get("sampler_name", [[]])[0]
-                schedulers = req_in.get("scheduler", [[]])[0]
-                return (
-                    [str(s) for s in samplers if isinstance(s, str)],
-                    [str(s) for s in schedulers if isinstance(s, str)],
-                )
+                samplers = [str(s) for s in req_in.get("sampler_name", [[]])[0] if isinstance(s, str)]
+                schedulers = [str(s) for s in req_in.get("scheduler", [[]])[0] if isinstance(s, str)]
+                if samplers and schedulers:
+                    self._samplers_cache = (samplers, schedulers)
+                return samplers, schedulers
         except Exception:
             return [], []
 
     def has_node(self, node_class_name: str) -> bool:
-        """Memeriksa apakah custom node tertentu terdaftar di `/object_info/{node}`."""
+        """Memeriksa apakah custom node tertentu terdaftar di `/object_info/{node}` (disimpan di cache memori)."""
+        if node_class_name in self._node_cache:
+            return self._node_cache[node_class_name]
         if not self.is_ready():
             return False
         try:
             req = urllib.request.Request(f"{self.http_url}/object_info/{node_class_name}", method="GET")
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return node_class_name in data
+                exists = node_class_name in data
+                self._node_cache[node_class_name] = exists
+                return exists
         except Exception:
             return False
 
@@ -257,12 +269,13 @@ class HeadlessComfyManager:
         """Mengambil metrik real-time GPU VRAM, CPU System RAM, Status Backend, dan Profil WanGP."""
         ram_used, ram_avail, ram_total = get_system_ram_metrics()
         vram_used, _, vram_total, gpu_name = get_gpu_vram_metrics()
-        online = self.is_ready()
+        online = False
 
-        if online:
-            try:
-                req = urllib.request.Request(f"{self.http_url}/system_stats", method="GET")
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
+        try:
+            req = urllib.request.Request(f"{self.http_url}/system_stats", method="GET")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                if resp.status == 200:
+                    online = True
                     data = json.loads(resp.read().decode("utf-8"))
                     devices = data.get("devices", [])
                     if devices:
@@ -273,8 +286,8 @@ class HeadlessComfyManager:
                         if vt > 0:
                             vram_total = vt
                             vram_used = max(0.0, vt - vf)
-            except Exception:
-                pass
+        except Exception:
+            online = False
 
         return {
             "online": online,
@@ -309,8 +322,11 @@ class HeadlessComfyManager:
     ) -> Tuple[List[bytes], Dict[str, float]]:
         """
         Mengeksekusi workflow JSON ComfyUI dengan:
-        1. Engine Transition Guard + Pre-Flight System RAM Watchdog
-        2. Pemantauan WebSocket real-time (`ws.settimeout(4.0)` tahan cold-load 6-10 GB)
+        1. Engine Transition Guard + C++ Page-Cache Eviction + Pre-Flight System RAM Watchdog
+        2. Smart Phase-Aware WebSocket Monitoring:
+           - Membedakan fase pemuatan model (`is_sampling_phase = False`) vs fase perhitungan step (`is_sampling_phase = True`)
+           - Tidak pernah menampilkan teks 'Cold-load' saat sudah masuk ke tahap Sampling Step 1/N..N/N
+           - Hanya melakukan fallback cek `/history` jika tidak ada pesan WebSocket selama >= 20 detik
         3. Auto-Heal Daemon: jika proses ComfyUI mati karena OOM, otomatis `self.start()` ulang
         4. Sequential Flush (jika `Profile 2: Low-RAM Sequential Stage` aktif)
         Mengembalikan `(daftar_bytes_output_image_atau_frame, dict_waktu_tahap)`.
@@ -326,13 +342,15 @@ class HeadlessComfyManager:
         client_id = uuid.uuid4().hex
         ws = websocket.WebSocket()
         ws.connect(f"{self.ws_url}?clientId={client_id}", timeout=30)
-        ws.settimeout(4.0)  # Heartbeat pendek tahan cold-load disk Colab
+        ws.settimeout(8.0)
 
         t_start = time.time()
         t_stage1_end = t_start
         t_stage2_end = t_start
+        last_ws_msg_time = t_start
         last_ratio = 0.04
-        stage_desc = f"[{engine_id.upper()}] Memuat bobot model & menyandikan prompt..."
+        is_sampling_phase = False
+        stage_desc = f"[{engine_id.upper()}] Menyiapkan model & menyandikan prompt..."
 
         try:
             payload = json.dumps({"prompt": workflow, "client_id": client_id}).encode("utf-8")
@@ -354,20 +372,16 @@ class HeadlessComfyManager:
                 progress_cb(last_ratio, stage_desc)
 
             while True:
-                elapsed_sec = time.time() - t_start
+                now = time.time()
+                elapsed_sec = now - t_start
                 if elapsed_sec > timeout_sec:
                     raise TimeoutError(f"Eksekusi melebihi batas waktu {timeout_sec} detik.")
 
                 try:
                     raw_msg = ws.recv()
+                    last_ws_msg_time = time.time()
                 except (websocket.WebSocketTimeoutException, TimeoutError, socket.timeout):
-                    # Normal terjadi saat ComfyUI membaca bobot 6–10 GB dari disk Colab:
-                    # 1. Cek apakah prompt_id sudah selesai di /history/{prompt_id}
-                    hist_entry = self._fetch_history_entry(prompt_id)
-                    if hist_entry and hist_entry.get("outputs"):
-                        break
-
-                    # 2. Cek apakah proses daemon ComfyUI mati karena OOM Linux
+                    # 1. Cek apakah proses daemon ComfyUI mati karena OOM Linux
                     if self.process is not None and self.process.poll() is not None:
                         tail_log = self.get_recent_logs(30)
                         print("[AUTO-HEAL] Daemon ComfyUI terdeteksi berhenti! Menyalakan ulang...", flush=True)
@@ -378,12 +392,25 @@ class HeadlessComfyManager:
                             f"dinyalakan ulang secara otomatis (Auto-Healed). Silakan klik Generate lagi.\nLog:\n{tail_log}"
                         )
 
-                    # 3. Update progress bar Gradio dengan waktu tunggu berjalan (elapsed_sec)
+                    # 2. Hanya cek /history/{prompt_id} jika benar-benar tidak ada pesan WebSocket selama >= 20 detik
+                    #    agar tidak mengganggu event loop ComfyUI di tengah-tengah step sampling!
+                    if time.time() - last_ws_msg_time >= 20.0:
+                        hist_entry = self._fetch_history_entry(prompt_id)
+                        if hist_entry and hist_entry.get("outputs"):
+                            break
+
+                    # 3. Update progress bar sesuai fase aktual (TANPA label 'Cold-load' saat sedang Sampling!)
                     if progress_cb is not None:
-                        progress_cb(
-                            last_ratio,
-                            f"{stage_desc} (Cold-load / proses berjalan {int(elapsed_sec)} dtk...)",
-                        )
+                        if is_sampling_phase:
+                            progress_cb(
+                                last_ratio,
+                                f"{stage_desc} ({int(elapsed_sec)} dtk)",
+                            )
+                        else:
+                            progress_cb(
+                                last_ratio,
+                                f"{stage_desc} ({int(elapsed_sec)} dtk...)",
+                            )
                     continue
 
                 if isinstance(raw_msg, bytes):
@@ -402,10 +429,13 @@ class HeadlessComfyManager:
                         stage_desc = f"Tahap 1/3: Menjalankan {node_cls}..."
                         last_ratio = max(last_ratio, 0.10)
                     elif "Sampler" in node_cls:
+                        is_sampling_phase = True
+                        ws.settimeout(15.0)  # Perpanjang timeout selama sampling agar tidak memotong step 5-12 dtk
                         t_stage1_end = time.time()
                         stage_desc = f"Tahap 2/3: Sampling Denoising ({node_cls})..."
                         last_ratio = max(last_ratio, 0.18)
                     elif "Decode" in node_cls or "Upscale" in node_cls or "Save" in node_cls:
+                        is_sampling_phase = True
                         if t_stage2_end <= t_stage1_end:
                             t_stage2_end = time.time()
                         stage_desc = f"Tahap 3/3: Decoding & Post-Processing ({node_cls})..."
@@ -414,6 +444,8 @@ class HeadlessComfyManager:
                         progress_cb(last_ratio, f"{stage_desc} ({int(elapsed_sec)} dtk)")
 
                 elif msg_type == "progress" and data.get("prompt_id") == prompt_id:
+                    is_sampling_phase = True
+                    ws.settimeout(15.0)
                     val = float(data.get("value", 0))
                     max_val = float(data.get("max", 1))
                     if max_val > 0:
